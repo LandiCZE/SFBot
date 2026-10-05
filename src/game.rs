@@ -35,6 +35,8 @@ pub struct CharacterSummary {
     pub attributes: AttributesSummary,
     pub active_potions: Vec<ActivePotionSummary>,
     pub active_potion_slot_free: bool,
+    pub backpack_free_slots: usize,
+    pub backpack_total_slots: usize,
 }
 
 #[derive(Serialize)]
@@ -226,6 +228,10 @@ impl StateSummary {
             .collect();
         let active_potion_slot_free = ch.active_potions.iter().any(|s| s.is_none());
 
+        let backpack_total_slots = ch.inventory.backpack.len();
+        let backpack_filled = ch.inventory.backpack.iter().filter(|s| s.is_some()).count();
+        let backpack_free_slots = backpack_total_slots.saturating_sub(backpack_filled);
+
         let character = CharacterSummary {
             name: ch.name.clone(),
             level: ch.level,
@@ -245,6 +251,8 @@ impl StateSummary {
             },
             active_potions,
             active_potion_slot_free,
+            backpack_free_slots,
+            backpack_total_slots,
         };
 
         let (current_action, busy_until_sec_remaining) = match &gs.tavern.current_action {
@@ -418,8 +426,10 @@ impl StateSummary {
                             | ItemType::ToiletKey
                             | ItemType::QuickSandGlass
                     );
+                    // Treat equals as junk too — otherwise swap-outs after
+                    // equipping an upgrade can sit in the backpack forever.
                     let is_junk = !is_special
-                        && (target_slot.is_none() || delta.map(|d| d < 0).unwrap_or(true));
+                        && (target_slot.is_none() || delta.map(|d| d <= 0).unwrap_or(true));
                     BackpackItemSummary {
                         slot: i + 1,
                         item: item_brief(item),

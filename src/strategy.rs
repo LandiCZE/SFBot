@@ -4,6 +4,11 @@
 use crate::actions::{Action, Attr};
 use crate::game::StateSummary;
 
+/// Minimum free backpack slots required before starting an expedition.
+/// Expeditions can drop up to ~4 items (encounter targets + boss drops);
+/// 3 free slots leaves comfortable headroom.
+const MIN_FREE_SLOTS_FOR_EXPEDITION: usize = 3;
+
 pub struct HeuristicPick {
     pub action: Action,
     pub reason: &'static str,
@@ -176,9 +181,17 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         return None;
     }
 
-    // 8. Start expedition.
+    // 8. Start expedition — pre-flight: require >=3 free backpack slots so
+    //    the ~4 items an expedition can drop don't overflow. Rule 2
+    //    (sell/dismantle junk) will fire first if we're low on slots.
     if state.tavern.mode == "expeditions" && state.tavern.active_expedition.is_none() {
-        if let Some(exp) = state
+        if state.character.backpack_free_slots < MIN_FREE_SLOTS_FOR_EXPEDITION {
+            tracing::debug!(
+                free = state.character.backpack_free_slots,
+                need = MIN_FREE_SLOTS_FOR_EXPEDITION,
+                "backpack too full for expedition — waiting for a clear cycle"
+            );
+        } else if let Some(exp) = state
             .tavern
             .expeditions
             .iter()
@@ -187,7 +200,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         {
             return Some(HeuristicPick {
                 action: Action::StartExpedition { expedition_index: exp.index },
-                reason: "heuristic: idle, expeditions mode, enough thirst for cheapest",
+                reason: "heuristic: idle, expeditions mode, backpack has headroom",
             });
         }
     }
