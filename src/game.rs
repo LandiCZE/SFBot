@@ -3,7 +3,7 @@ use serde::Serialize;
 use sf_api::command::{AttributeType, ExpeditionSetting};
 use sf_api::gamestate::GameState;
 use sf_api::gamestate::character::{Character, Class};
-use sf_api::gamestate::items::{EquipmentSlot, Item};
+use sf_api::gamestate::items::{EquipmentSlot, Item, ItemType, PotionSize, PotionType};
 use sf_api::gamestate::tavern::{AvailableTasks, CurrentAction, ExpeditionStage};
 use sf_api::misc::EnumMapGet;
 
@@ -28,6 +28,8 @@ pub struct CharacterSummary {
     pub silver: u64,
     pub mushrooms: u32,
     pub attributes: AttributesSummary,
+    pub active_potions: Vec<ActivePotionSummary>,
+    pub active_potion_slot_free: bool,
 }
 
 #[derive(Serialize)]
@@ -45,6 +47,13 @@ pub struct AttributeStat {
     pub additions: u32,
     pub times_bought: u32,
     pub next_point_cost_silver: u64,
+}
+
+#[derive(Serialize)]
+pub struct ActivePotionSummary {
+    pub kind: &'static str,
+    pub size: &'static str,
+    pub expires_in_sec: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -113,10 +122,15 @@ pub struct BackpackItemSummary {
     pub item: ItemBrief,
     pub sell_price_silver: u32,
     pub target_equipment_slot: Option<&'static str>,
-    /// Positive = backpack item is better than currently equipped at target slot.
-    /// None when the item is not equipment or no comparison is possible.
     pub main_stat_delta_vs_equipped: Option<i32>,
     pub is_junk: bool,
+    pub potion: Option<PotionBrief>,
+}
+
+#[derive(Serialize)]
+pub struct PotionBrief {
+    pub kind: &'static str,
+    pub size: &'static str,
 }
 
 #[derive(Serialize)]
@@ -135,6 +149,18 @@ impl StateSummary {
         let ch = &gs.character;
         let main = ch.class.main_attribute();
 
+        let active_potions: Vec<ActivePotionSummary> = ch
+            .active_potions
+            .iter()
+            .filter_map(|slot| slot.as_ref())
+            .map(|p| ActivePotionSummary {
+                kind: potion_kind_name(p.typ),
+                size: potion_size_name(p.size),
+                expires_in_sec: p.expires.map(|t| (t - Local::now()).num_seconds()),
+            })
+            .collect();
+        let active_potion_slot_free = ch.active_potions.iter().any(|s| s.is_none());
+
         let character = CharacterSummary {
             name: ch.name.clone(),
             level: ch.level,
@@ -152,6 +178,8 @@ impl StateSummary {
                 constitution: attr_stat(ch, AttributeType::Constitution),
                 luck: attr_stat(ch, AttributeType::Luck),
             },
+            active_potions,
+            active_potion_slot_free,
         };
 
         let (current_action, busy_until_sec_remaining) = match &gs.tavern.current_action {
@@ -299,8 +327,28 @@ impl StateSummary {
                         let new_score = item_main_stat_score(item, main);
                         new_score as i32 - equipped_score as i32
                     });
-                    let is_junk = target_slot.is_none()
-                        || delta.map(|d| d < 0).unwrap_or(true);
+                    let potion = match &item.typ {
+                        ItemType::Potion(p) => Some(PotionBrief {
+                            kind: potion_kind_name(p.typ),
+                            size: potion_size_name(p.size),
+                        }),
+                        _ => None,
+                    };
+                    // Potions are never junk — the drink_potion heuristic uses them.
+                    // Also skip "specials" we don't know how to use/sell safely.
+                    let is_special = matches!(
+                        item.typ,
+                        ItemType::Potion(_)
+                            | ItemType::Scrapbook
+                            | ItemType::DungeonKey { .. }
+                            | ItemType::HeartOfDarkness
+                            | ItemType::WheelOfFortune
+                            | ItemType::Mannequin
+                            | ItemType::ToiletKey
+                            | ItemType::QuickSandGlass
+                    );
+                    let is_junk = !is_special
+                        && (target_slot.is_none() || delta.map(|d| d < 0).unwrap_or(true));
                     BackpackItemSummary {
                         slot: i + 1,
                         item: item_brief(item),
@@ -308,6 +356,7 @@ impl StateSummary {
                         target_equipment_slot: target_slot.map(slot_name),
                         main_stat_delta_vs_equipped: delta,
                         is_junk,
+                        potion,
                     }
                 })
             })
@@ -324,12 +373,10 @@ impl StateSummary {
 }
 
 /// Main-stat score for comparing items against each other for a given class.
-/// Weight: main_attr × 2 + constitution. Weapon damage also counts for weapons.
 fn item_main_stat_score(item: &Item, main: AttributeType) -> u32 {
     let m = *item.attributes.get(main);
     let c = *item.attributes.get(AttributeType::Constitution);
     let base = m * 2 + c;
-    // For weapons, include average damage × 2 (weapon dmg is the main stat).
     let weapon_bonus = match &item.typ {
         sf_api::gamestate::items::ItemType::Weapon { min_dmg, max_dmg } => min_dmg + max_dmg,
         _ => 0,
@@ -399,5 +446,24 @@ fn slot_name(s: EquipmentSlot) -> &'static str {
         EquipmentSlot::Talisman => "talisman",
         EquipmentSlot::Weapon => "weapon",
         EquipmentSlot::Shield => "offhand",
+    }
+}
+
+pub fn potion_kind_name(t: PotionType) -> &'static str {
+    match t {
+        PotionType::Strength => "strength",
+        PotionType::Dexterity => "dexterity",
+        PotionType::Intelligence => "intelligence",
+        PotionType::Constitution => "constitution",
+        PotionType::Luck => "luck",
+        PotionType::EternalLife => "eternal_life",
+    }
+}
+
+pub fn potion_size_name(s: PotionSize) -> &'static str {
+    match s {
+        PotionSize::Small => "small",
+        PotionSize::Medium => "medium",
+        PotionSize::Large => "large",
     }
 }

@@ -25,6 +25,43 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         || (state.tavern.current_action == "expedition"
             && state.tavern.active_expedition.is_none());
 
+    // 0. Drink a main-attr or Constitution potion if a slot is free and we
+    //    have a matching one in the backpack (prefer Large > Medium > Small).
+    if state.character.active_potion_slot_free {
+        let main = state.character.main_attribute;
+        let active_kinds: Vec<&str> = state
+            .character
+            .active_potions
+            .iter()
+            .map(|p| p.kind)
+            .collect();
+        let size_rank = |s: &str| match s {
+            "large" => 3,
+            "medium" => 2,
+            "small" => 1,
+            _ => 0,
+        };
+        if let Some(b) = state
+            .backpack
+            .iter()
+            .filter(|b| {
+                b.potion
+                    .as_ref()
+                    .map(|p| {
+                        (p.kind == main || p.kind == "constitution")
+                            && !active_kinds.contains(&p.kind)
+                    })
+                    .unwrap_or(false)
+            })
+            .max_by_key(|b| size_rank(b.potion.as_ref().map(|p| p.size).unwrap_or("")))
+        {
+            return Some(HeuristicPick {
+                action: Action::DrinkPotion { backpack_slot: b.slot },
+                reason: "heuristic: drink main-attr or constitution potion while slot is free",
+            });
+        }
+    }
+
     // 1. Equip clear upgrade.
     if let Some(upgrade) = state
         .backpack

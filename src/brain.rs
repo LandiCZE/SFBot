@@ -140,6 +140,7 @@ fn tool_schema() -> Value {
                         "buy_attribute",
                         "equip_item",
                         "sell_item",
+                        "drink_potion",
                         "start_guard_work",
                         "fight_arena",
                         "set_questing_preference",
@@ -150,7 +151,7 @@ fn tool_schema() -> Value {
                 "expedition_index": {"type": "integer", "minimum": 0, "maximum": 2, "description": "Required for start_expedition."},
                 "attribute": {"type": "string", "enum": ["strength","dexterity","intelligence","constitution","luck"], "description": "Required for buy_attribute."},
                 "points": {"type": "integer", "minimum": 1, "description": "Required for buy_attribute."},
-                "backpack_slot": {"type": "integer", "minimum": 1, "description": "Required for equip_item and sell_item."},
+                "backpack_slot": {"type": "integer", "minimum": 1, "description": "Required for equip_item, sell_item, and drink_potion."},
                 "hours": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Required for start_guard_work."},
                 "prefer_quests": {"type": "boolean", "description": "Required for set_questing_preference."},
                 "reason": {"type": "string", "description": "One short sentence explaining why you picked this action."}

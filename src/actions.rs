@@ -11,6 +11,7 @@ pub enum Action {
     BuyAttribute { attribute: Attr, points: u32 },
     EquipItem { backpack_slot: usize },
     SellItem { backpack_slot: usize },
+    DrinkPotion { backpack_slot: usize },
     StartGuardWork { hours: u8 },
     FightArena,
     SetQuestingPreference { prefer_quests: bool },
@@ -149,6 +150,19 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
         }
         Action::SellItem { backpack_slot } => {
             backpack_item(*backpack_slot, state)?;
+            Ok(())
+        }
+        Action::DrinkPotion { backpack_slot } => {
+            let b = backpack_item(*backpack_slot, state)?;
+            if b.potion.is_none() {
+                return Err(format!(
+                    "slot {backpack_slot} is not a potion ({})",
+                    b.item.kind
+                ));
+            }
+            if !state.character.active_potion_slot_free {
+                return Err("all 3 active potion slots are full".into());
+            }
             Ok(())
         }
         Action::StartGuardWork { hours } => {

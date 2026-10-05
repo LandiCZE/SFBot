@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use rand::Rng;
 use sf_api::command::{Command, ExpeditionSetting};
-use sf_api::gamestate::items::PlayerItemPosition;
+use sf_api::gamestate::items::{ItemPosition, PlayerItemPosition};
 use sf_api::gamestate::tavern::ExpeditionStage;
 use sf_api::session::SimpleSession;
 use std::collections::VecDeque;
@@ -500,6 +500,25 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
                 })
                 .await?;
             Ok(format!("equipped backpack slot {backpack_slot}"))
+        }
+        Action::DrinkPotion { backpack_slot } => {
+            let (from, item_ident) = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before drink"))?;
+                let (bag_pos, item) = gs
+                    .character
+                    .inventory
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, (bp, io))| {
+                        io.and_then(|it| if i + 1 == *backpack_slot { Some((bp, it)) } else { None })
+                    })
+                    .ok_or_else(|| anyhow!("backpack slot {backpack_slot} empty at execute"))?;
+                (ItemPosition::from(bag_pos), item.command_ident())
+            };
+            session.send_command(Command::UsePotion { from, item_ident }).await?;
+            Ok(format!("drank potion from backpack slot {backpack_slot}"))
         }
         Action::SellItem { backpack_slot } => {
             let (item_pos, item_ident) = {
