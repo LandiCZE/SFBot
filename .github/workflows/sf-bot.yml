@@ -1,0 +1,56 @@
+name: sf-bot
+
+on:
+  schedule:
+    # Every 30 min at :00 and :30 (UTC). Each run bots for ~25 min, leaving a
+    # ~5 min slack so the next cron fires reliably.
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      run_seconds:
+        description: 'Seconds to run (default 1500 = 25 min)'
+        required: false
+        default: '1500'
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (dev profile, cached)
+        run: cargo build
+
+      - name: Run bot
+        env:
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+          SF_SERVER: ''
+          SF_CHARACTER: ${{ secrets.SF_CHARACTER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_MODEL: claude-haiku-4-5-20251001
+          DRY_RUN: 'false'
+          RUN_SECONDS: ${{ github.event.inputs.run_seconds || '1500' }}
+          MAX_CYCLES: '2000'
+          CLAUDE_MIN_INTERVAL_SEC: '60'
+          RUST_LOG: info
+        run: cargo run --quiet
+
+      - name: Upload decisions.jsonl
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: decisions-${{ github.run_id }}
+          path: decisions.jsonl
+          if-no-files-found: ignore
+          retention-days: 14

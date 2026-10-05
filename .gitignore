@@ -1,0 +1,7 @@
+/target
+.env
+decisions.jsonl
+decisions-*.jsonl
+run-*.log
+smoke-*.log
+verify-*.log
