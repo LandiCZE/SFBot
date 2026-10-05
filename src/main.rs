@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use rand::Rng;
-use sf_api::command::{Command, ExpeditionSetting};
+use sf_api::command::{BlacksmithAction, Command, ExpeditionSetting};
+use sf_api::gamestate::dungeons::Dungeon;
 use sf_api::gamestate::items::{ItemPosition, PlayerItemPosition};
 use sf_api::gamestate::tavern::ExpeditionStage;
 use sf_api::session::SimpleSession;
@@ -43,6 +44,7 @@ async fn main() -> Result<()> {
     let log_path = PathBuf::from("decisions.jsonl");
     let mut recent: VecDeque<log::DecisionLog> = VecDeque::with_capacity(6);
     let mut last_claude_at: Option<Instant> = None;
+    let mut last_dungeon_refresh: Option<Instant> = None;
     let started_at = Instant::now();
 
     tracing::info!(
@@ -82,6 +84,41 @@ async fn main() -> Result<()> {
             tracing::warn!("Update failed: {e:#} — retry after backoff");
             sleep(Duration::from_secs(10)).await;
             continue;
+        }
+
+        // UpdateDungeons every ~5 min — Update doesn't refresh dungeon progress.
+        let needs_dungeon_refresh = last_dungeon_refresh
+            .map(|t| t.elapsed() > Duration::from_secs(300))
+            .unwrap_or(true);
+        if needs_dungeon_refresh {
+            if let Err(e) = session.send_command(Command::UpdateDungeons).await {
+                tracing::debug!("UpdateDungeons failed: {e:#}");
+            } else {
+                last_dungeon_refresh = Some(Instant::now());
+            }
+        }
+
+        // Fortress autopilot: finish an upgrade whose timer has elapsed. Server
+        // requires an explicit FortressBuildFinish{mushrooms:0} even when the
+        // timer is done — Update won't credit it on its own.
+        if let Some(gs) = session.game_state() {
+            if let Some(f) = gs.fortress.as_ref() {
+                if let (Some(target), Some(finish)) = (f.building_upgrade.target, f.building_upgrade.finish) {
+                    if finish <= chrono::Local::now() && !cfg.dry_run {
+                        if let Err(e) = session
+                            .send_command(Command::FortressBuildFinish {
+                                f_type: target,
+                                mushrooms: 0,
+                            })
+                            .await
+                        {
+                            tracing::warn!("FortressBuildFinish failed: {e:#}");
+                        } else {
+                            tracing::info!(?target, "fortress build finished");
+                        }
+                    }
+                }
+            }
         }
 
         // Expedition autopilot: if an expedition is active, drive it ourselves.
@@ -500,6 +537,73 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
                 })
                 .await?;
             Ok(format!("equipped backpack slot {backpack_slot}"))
+        }
+        Action::DismantleItem { backpack_slot } => {
+            let (item_pos, item_ident) = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before dismantle"))?;
+                let (bag_pos, item) = gs
+                    .character
+                    .inventory
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, (bp, io))| {
+                        io.and_then(|it| if i + 1 == *backpack_slot { Some((bp, it)) } else { None })
+                    })
+                    .ok_or_else(|| anyhow!("backpack slot {backpack_slot} empty at execute"))?;
+                (PlayerItemPosition::from(bag_pos), item.command_ident())
+            };
+            session
+                .send_command(Command::Blacksmith {
+                    item_pos,
+                    action: BlacksmithAction::Dismantle,
+                    item_ident,
+                })
+                .await?;
+            Ok(format!("dismantled backpack slot {backpack_slot}"))
+        }
+        Action::FightDungeon => {
+            session.send_command(Command::UpdateDungeons).await?;
+            let dungeon_name = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing after UpdateDungeons"))?;
+                let state = game::StateSummary::from_game_state(gs);
+                state
+                    .dungeons
+                    .best_winnable_name
+                    .ok_or_else(|| anyhow!("no winnable dungeon"))?
+            };
+            // Resolve name back to the Dungeon enum (try light first, then shadow).
+            let dungeon = if let Some(d) = game::find_light_dungeon(&dungeon_name) {
+                Dungeon::Light(d)
+            } else if let Some(d) = game::find_shadow_dungeon(&dungeon_name) {
+                Dungeon::Shadow(d)
+            } else {
+                return Err(anyhow!("couldn't resolve dungeon name {dungeon_name:?}"));
+            };
+            session
+                .send_command(Command::FightDungeon {
+                    dungeon,
+                    use_mushroom: false,
+                })
+                .await?;
+            Ok(format!("fought dungeon {dungeon_name}"))
+        }
+        Action::FortressUpgradeBuilding { building } => {
+            let f_type = game::fortress_building_from_name(building)
+                .ok_or_else(|| anyhow!("unknown building {building:?}"))?;
+            session.send_command(Command::FortressBuild { f_type }).await?;
+            Ok(format!("fortress: started upgrade of {building}"))
+        }
+        Action::FortressGatherResource { resource } => {
+            let r = game::fortress_resource_from_name(resource)
+                .ok_or_else(|| anyhow!("unknown resource {resource:?}"))?;
+            session
+                .send_command(Command::FortressGather { resource: r })
+                .await?;
+            Ok(format!("fortress: gathered {resource}"))
         }
         Action::DrinkPotion { backpack_slot } => {
             let (from, item_ident) = {

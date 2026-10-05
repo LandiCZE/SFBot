@@ -12,8 +12,12 @@ pub enum Action {
     EquipItem { backpack_slot: usize },
     SellItem { backpack_slot: usize },
     DrinkPotion { backpack_slot: usize },
+    DismantleItem { backpack_slot: usize },
     StartGuardWork { hours: u8 },
     FightArena,
+    FightDungeon,
+    FortressUpgradeBuilding { building: String },
+    FortressGatherResource { resource: String },
     SetQuestingPreference { prefer_quests: bool },
     Wait,
 }
@@ -48,9 +52,6 @@ pub struct Decision {
 }
 
 pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
-    // sf-api's Tavern::is_idle() treats current_action="expedition" as idle when
-    // there is no active expedition (i.e. a Finished expedition that the server
-    // hasn't fully cleared yet). Mirror that so start_* actions aren't blocked.
     let idle = state.tavern.current_action == "idle"
         || (state.tavern.current_action == "expedition"
             && state.tavern.active_expedition.is_none());
@@ -82,10 +83,7 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
                 return Err(format!("not idle ({})", state.tavern.current_action));
             }
             if state.tavern.mode != "expeditions" {
-                return Err(format!(
-                    "expeditions not available (mode={})",
-                    state.tavern.mode
-                ));
+                return Err(format!("expeditions not available (mode={})", state.tavern.mode));
             }
             if state.tavern.active_expedition.is_some() {
                 return Err("already on an expedition".into());
@@ -165,6 +163,17 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
             }
             Ok(())
         }
+        Action::DismantleItem { backpack_slot } => {
+            backpack_item(*backpack_slot, state)?;
+            let bs = state
+                .blacksmith
+                .as_ref()
+                .ok_or_else(|| "blacksmith not unlocked".to_string())?;
+            if bs.dismantle_left == 0 {
+                return Err("no dismantles left today".into());
+            }
+            Ok(())
+        }
         Action::StartGuardWork { hours } => {
             if !(1..=10).contains(hours) {
                 return Err("hours must be 1..=10".into());
@@ -183,6 +192,67 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
             }
             if state.arena.enemy_ids.is_empty() {
                 return Err("no arena opponents visible".into());
+            }
+            Ok(())
+        }
+        Action::FightDungeon => {
+            if !state.dungeons.off_cooldown {
+                return Err(format!(
+                    "dungeons on cooldown ({}s)",
+                    state
+                        .dungeons
+                        .next_free_fight_sec_remaining
+                        .unwrap_or_default()
+                ));
+            }
+            if state.dungeons.best_winnable_name.is_none() {
+                return Err("no winnable dungeon within safe-margin".into());
+            }
+            Ok(())
+        }
+        Action::FortressUpgradeBuilding { building } => {
+            let f = state
+                .fortress
+                .as_ref()
+                .ok_or_else(|| "fortress not unlocked".to_string())?;
+            if f.upgrade_in_progress.is_some() {
+                return Err("another fortress upgrade is already in progress".into());
+            }
+            let b = f
+                .buildings
+                .iter()
+                .find(|b| b.name == building.as_str())
+                .ok_or_else(|| format!("unknown building {building:?}"))?;
+            if !b.buildable_now {
+                return Err(format!(
+                    "{building} not buildable now (level={}, cost: wood={} stone={} silver={})",
+                    b.level, b.wood_cost, b.stone_cost, b.silver_cost
+                ));
+            }
+            Ok(())
+        }
+        Action::FortressGatherResource { resource } => {
+            let f = state
+                .fortress
+                .as_ref()
+                .ok_or_else(|| "fortress not unlocked".to_string())?;
+            match resource.as_str() {
+                "wood" => {
+                    if f.wood_current == 0 {
+                        return Err("no wood to gather".into());
+                    }
+                }
+                "stone" => {
+                    if f.stone_current == 0 {
+                        return Err("no stone to gather".into());
+                    }
+                }
+                "experience" => {
+                    if f.experience_current == 0 {
+                        return Err("no experience to gather".into());
+                    }
+                }
+                other => return Err(format!("unknown resource {other:?}")),
             }
             Ok(())
         }

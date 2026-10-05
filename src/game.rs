@@ -3,6 +3,8 @@ use serde::Serialize;
 use sf_api::command::{AttributeType, ExpeditionSetting};
 use sf_api::gamestate::GameState;
 use sf_api::gamestate::character::{Character, Class};
+use sf_api::gamestate::dungeons::{Dungeon, DungeonProgress, LightDungeon, ShadowDungeon};
+use sf_api::gamestate::fortress::{FortressBuildingType, FortressResourceType};
 use sf_api::gamestate::items::{EquipmentSlot, Item, ItemType, PotionSize, PotionType};
 use sf_api::gamestate::tavern::{AvailableTasks, CurrentAction, ExpeditionStage};
 use sf_api::misc::EnumMapGet;
@@ -12,6 +14,9 @@ pub struct StateSummary {
     pub character: CharacterSummary,
     pub tavern: TavernSummary,
     pub arena: ArenaSummary,
+    pub dungeons: DungeonsSummary,
+    pub blacksmith: Option<BlacksmithSummary>,
+    pub fortress: Option<FortressSummary>,
     pub equipment: Vec<EquippedSummary>,
     pub backpack: Vec<BackpackItemSummary>,
 }
@@ -110,6 +115,63 @@ pub struct ArenaSummary {
 }
 
 #[derive(Serialize)]
+pub struct DungeonsSummary {
+    pub off_cooldown: bool,
+    pub next_free_fight_sec_remaining: Option<i64>,
+    pub available: Vec<DungeonBrief>,
+    /// Best winnable target with (enemy_level + SAFE_MARGIN) <= my_level.
+    pub best_winnable_name: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct DungeonBrief {
+    pub name: String,
+    pub kind: &'static str, // "light" or "shadow"
+    pub current_floor: u16,
+    pub enemy_level: Option<u16>,
+    pub enemy_class: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct BlacksmithSummary {
+    pub metal: u64,
+    pub arcane: u64,
+    pub dismantle_left: u8,
+}
+
+#[derive(Serialize)]
+pub struct FortressSummary {
+    pub honor: u32,
+    pub wood_current: u64,
+    pub wood_limit: u64,
+    pub stone_current: u64,
+    pub stone_limit: u64,
+    pub experience_current: u64,
+    pub experience_limit: u64,
+    pub buildings: Vec<FortressBuildingBrief>,
+    pub upgrade_in_progress: Option<FortressUpgradeInfo>,
+    pub attack_target_present: bool,
+    pub attack_reroll_free: bool,
+    pub attack_reroll_silver_cost: u64,
+}
+
+#[derive(Serialize)]
+pub struct FortressBuildingBrief {
+    pub name: &'static str,
+    pub level: u16,
+    pub wood_cost: u64,
+    pub stone_cost: u64,
+    pub silver_cost: u64,
+    pub buildable_now: bool,
+}
+
+#[derive(Serialize)]
+pub struct FortressUpgradeInfo {
+    pub target: String,
+    pub finishes_in_sec: i64,
+}
+
+#[derive(Serialize)]
 pub struct EquippedSummary {
     pub slot: &'static str,
     pub item: ItemBrief,
@@ -143,6 +205,9 @@ pub struct ItemBrief {
     pub luck: u32,
     pub armor_or_weapon_val: u32,
 }
+
+/// How many levels below us a dungeon enemy must be before we attempt it.
+pub const DUNGEON_SAFE_MARGIN: u16 = 5;
 
 impl StateSummary {
     pub fn from_game_state(gs: &GameState) -> Self {
@@ -294,6 +359,14 @@ impl StateSummary {
             }
         };
 
+        let dungeons = dungeons_summary(gs, ch.level);
+        let blacksmith = gs.blacksmith.as_ref().map(|b| BlacksmithSummary {
+            metal: b.metal,
+            arcane: b.arcane,
+            dismantle_left: b.dismantle_left,
+        });
+        let fortress = gs.fortress.as_ref().map(|f| fortress_summary(f, ch.silver));
+
         let equipment: Vec<EquippedSummary> = ch
             .equipment
             .0
@@ -334,8 +407,6 @@ impl StateSummary {
                         }),
                         _ => None,
                     };
-                    // Potions are never junk — the drink_potion heuristic uses them.
-                    // Also skip "specials" we don't know how to use/sell safely.
                     let is_special = matches!(
                         item.typ,
                         ItemType::Potion(_)
@@ -366,13 +437,194 @@ impl StateSummary {
             character,
             tavern,
             arena,
+            dungeons,
+            blacksmith,
+            fortress,
             equipment,
             backpack,
         }
     }
 }
 
-/// Main-stat score for comparing items against each other for a given class.
+fn dungeons_summary(gs: &GameState, my_level: u16) -> DungeonsSummary {
+    let (off_cooldown, remaining) = match gs.dungeons.next_free_fight {
+        None => (true, None),
+        Some(t) => {
+            let secs = (t - Local::now()).num_seconds();
+            (secs <= 0, Some(secs))
+        }
+    };
+
+    let mut available: Vec<DungeonBrief> = Vec::new();
+    for (dkey, prog) in gs.dungeons.light.iter() {
+        if let DungeonProgress::Open { finished } = prog {
+            if dkey == LightDungeon::Tower {
+                // Tower uses a separate command we don't implement yet.
+                continue;
+            }
+            let d = Dungeon::Light(dkey);
+            let enemy = gs.dungeons.current_enemy(d);
+            available.push(DungeonBrief {
+                name: format!("{:?}", dkey),
+                kind: "light",
+                current_floor: *finished,
+                enemy_level: enemy.map(|m| m.level),
+                enemy_class: enemy.map(|m| format!("{:?}", m.class)),
+            });
+        }
+    }
+    for (dkey, prog) in gs.dungeons.shadow.iter() {
+        if let DungeonProgress::Open { finished } = prog {
+            let d = Dungeon::Shadow(dkey);
+            let enemy = gs.dungeons.current_enemy(d);
+            available.push(DungeonBrief {
+                name: format!("{:?}", dkey),
+                kind: "shadow",
+                current_floor: *finished,
+                enemy_level: enemy.map(|m| m.level),
+                enemy_class: enemy.map(|m| format!("{:?}", m.class)),
+            });
+        }
+    }
+
+    let best_winnable_name = available
+        .iter()
+        .filter(|d| {
+            d.enemy_level
+                .map(|lv| lv.saturating_add(DUNGEON_SAFE_MARGIN) <= my_level)
+                .unwrap_or(false)
+        })
+        .min_by_key(|d| d.enemy_level.unwrap_or(u16::MAX))
+        .map(|d| d.name.clone());
+
+    DungeonsSummary {
+        off_cooldown,
+        next_free_fight_sec_remaining: remaining,
+        available,
+        best_winnable_name,
+    }
+}
+
+fn fortress_summary(f: &sf_api::gamestate::fortress::Fortress, silver: u64) -> FortressSummary {
+    let wood = f.resources.get(FortressResourceType::Wood);
+    let stone = f.resources.get(FortressResourceType::Stone);
+    let exp = f.resources.get(FortressResourceType::Experience);
+
+    let buildings: Vec<FortressBuildingBrief> = [
+        FortressBuildingType::Fortress,
+        FortressBuildingType::LaborersQuarters,
+        FortressBuildingType::WoodcuttersHut,
+        FortressBuildingType::Quarry,
+        FortressBuildingType::GemMine,
+        FortressBuildingType::Academy,
+        FortressBuildingType::ArcheryGuild,
+        FortressBuildingType::Barracks,
+        FortressBuildingType::MagesTower,
+        FortressBuildingType::Treasury,
+        FortressBuildingType::Smithy,
+        FortressBuildingType::Wall,
+    ]
+    .iter()
+    .map(|bt| {
+        let b = f.buildings.get(*bt);
+        FortressBuildingBrief {
+            name: fortress_building_name(*bt),
+            level: b.level,
+            wood_cost: b.upgrade_cost.wood,
+            stone_cost: b.upgrade_cost.stone,
+            silver_cost: b.upgrade_cost.silver,
+            buildable_now: f.can_build(*bt, silver),
+        }
+    })
+    .collect();
+
+    let upgrade_in_progress = f.building_upgrade.target.map(|target| {
+        let finishes_in = f
+            .building_upgrade
+            .finish
+            .map(|t| (t - Local::now()).num_seconds())
+            .unwrap_or(0);
+        FortressUpgradeInfo {
+            target: fortress_building_name(target).to_string(),
+            finishes_in_sec: finishes_in,
+        }
+    });
+
+    let reroll_free = f
+        .attack_free_reroll
+        .map(|t| t <= Local::now())
+        .unwrap_or(true);
+
+    FortressSummary {
+        honor: f.honor,
+        wood_current: wood.current,
+        wood_limit: wood.limit,
+        stone_current: stone.current,
+        stone_limit: stone.limit,
+        experience_current: exp.current,
+        experience_limit: exp.limit,
+        buildings,
+        upgrade_in_progress,
+        attack_target_present: f.attack_target.is_some(),
+        attack_reroll_free: reroll_free,
+        attack_reroll_silver_cost: f.opponent_reroll_price,
+    }
+}
+
+pub fn fortress_building_name(bt: FortressBuildingType) -> &'static str {
+    match bt {
+        FortressBuildingType::Fortress => "fortress",
+        FortressBuildingType::LaborersQuarters => "laborers_quarters",
+        FortressBuildingType::WoodcuttersHut => "woodcutters_hut",
+        FortressBuildingType::Quarry => "quarry",
+        FortressBuildingType::GemMine => "gem_mine",
+        FortressBuildingType::Academy => "academy",
+        FortressBuildingType::ArcheryGuild => "archery_guild",
+        FortressBuildingType::Barracks => "barracks",
+        FortressBuildingType::MagesTower => "mages_tower",
+        FortressBuildingType::Treasury => "treasury",
+        FortressBuildingType::Smithy => "smithy",
+        FortressBuildingType::Wall => "wall",
+    }
+}
+
+pub fn fortress_building_from_name(n: &str) -> Option<FortressBuildingType> {
+    Some(match n {
+        "fortress" => FortressBuildingType::Fortress,
+        "laborers_quarters" => FortressBuildingType::LaborersQuarters,
+        "woodcutters_hut" => FortressBuildingType::WoodcuttersHut,
+        "quarry" => FortressBuildingType::Quarry,
+        "gem_mine" => FortressBuildingType::GemMine,
+        "academy" => FortressBuildingType::Academy,
+        "archery_guild" => FortressBuildingType::ArcheryGuild,
+        "barracks" => FortressBuildingType::Barracks,
+        "mages_tower" => FortressBuildingType::MagesTower,
+        "treasury" => FortressBuildingType::Treasury,
+        "smithy" => FortressBuildingType::Smithy,
+        "wall" => FortressBuildingType::Wall,
+        _ => return None,
+    })
+}
+
+pub fn fortress_resource_from_name(n: &str) -> Option<FortressResourceType> {
+    Some(match n {
+        "wood" => FortressResourceType::Wood,
+        "stone" => FortressResourceType::Stone,
+        "experience" => FortressResourceType::Experience,
+        _ => return None,
+    })
+}
+
+pub fn find_light_dungeon(name: &str) -> Option<LightDungeon> {
+    use strum::IntoEnumIterator;
+    LightDungeon::iter().find(|d| format!("{:?}", d) == name)
+}
+
+pub fn find_shadow_dungeon(name: &str) -> Option<ShadowDungeon> {
+    use strum::IntoEnumIterator;
+    ShadowDungeon::iter().find(|d| format!("{:?}", d) == name)
+}
+
 fn item_main_stat_score(item: &Item, main: AttributeType) -> u32 {
     let m = *item.attributes.get(main);
     let c = *item.attributes.get(AttributeType::Constitution);

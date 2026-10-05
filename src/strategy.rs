@@ -1,16 +1,5 @@
 //! Pure heuristic action picker. Covers the mechanical cases so Claude only
 //! sees genuine tradeoffs. If this returns None, the main loop asks Claude.
-//!
-//! Rules (first match wins):
-//! 1. Equip clear upgrade — backpack item with largest positive main_stat_delta.
-//! 2. Sell junk — backpack item with no slot or strictly worse than equipped.
-//! 3. Buy attribute — main-attr next point when silver > 2 × its cost.
-//! 4. Fight arena — off cooldown + visible opponents.
-//! 5. Start expedition — idle, expeditions mode, enough thirst for cheapest.
-//! 6. Start quest — idle, quests mode, pick highest xp/min quest we can afford.
-//! 7. Guard work 10h — idle, thirst is 0 and no gear/attr/arena to do.
-//!
-//! Hard rule inherited: no action variant below can spend mushrooms.
 
 use crate::actions::{Action, Attr};
 use crate::game::StateSummary;
@@ -25,8 +14,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         || (state.tavern.current_action == "expedition"
             && state.tavern.active_expedition.is_none());
 
-    // 0. Drink a main-attr or Constitution potion if a slot is free and we
-    //    have a matching one in the backpack (prefer Large > Medium > Small).
+    // 0. Drink main-attr or Con potion if a slot is free.
     if state.character.active_potion_slot_free {
         let main = state.character.main_attribute;
         let active_kinds: Vec<&str> = state
@@ -75,20 +63,28 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         });
     }
 
-    // 2. Sell junk (clearly worse or non-equippable).
+    // 2. Dismantle junk at the blacksmith (preferred over selling if available).
     if let Some(junk) = state
         .backpack
         .iter()
         .filter(|b| b.is_junk)
         .max_by_key(|b| b.sell_price_silver)
     {
+        if let Some(bs) = state.blacksmith.as_ref() {
+            if bs.dismantle_left > 0 {
+                return Some(HeuristicPick {
+                    action: Action::DismantleItem { backpack_slot: junk.slot },
+                    reason: "heuristic: dismantle junk at blacksmith (metal/arcane > silver)",
+                });
+            }
+        }
         return Some(HeuristicPick {
             action: Action::SellItem { backpack_slot: junk.slot },
-            reason: "heuristic: sell junk item (no slot or strictly worse than equipped)",
+            reason: "heuristic: sell junk item",
         });
     }
 
-    // 3. Buy a main-attribute point if silver is comfortably above cost.
+    // 3. Buy main attribute if affordable.
     let main = state.character.main_attribute;
     let (main_stat, main_attr_variant) = match main {
         "strength" => (&state.character.attributes.strength, Attr::Strength),
@@ -108,7 +104,6 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         });
     }
 
-    // 3b. Also buy a Constitution point under the same rule.
     let con_stat = &state.character.attributes.constitution;
     if state.character.silver >= con_stat.next_point_cost_silver.saturating_mul(2)
         && con_stat.next_point_cost_silver > 0
@@ -122,7 +117,52 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         });
     }
 
-    // 4. Arena fight.
+    // 4. Fortress: gather overflowing resource.
+    if let Some(f) = state.fortress.as_ref() {
+        for (name, cur, lim) in [
+            ("wood", f.wood_current, f.wood_limit),
+            ("stone", f.stone_current, f.stone_limit),
+            ("experience", f.experience_current, f.experience_limit),
+        ] {
+            if lim > 0 && cur * 10 >= lim * 9 {
+                return Some(HeuristicPick {
+                    action: Action::FortressGatherResource {
+                        resource: name.into(),
+                    },
+                    reason: "heuristic: fortress resource ≥ 90% full — gather",
+                });
+            }
+        }
+    }
+
+    // 5. Fortress: upgrade cheapest buildable if no upgrade in progress.
+    if let Some(f) = state.fortress.as_ref() {
+        if f.upgrade_in_progress.is_none() {
+            if let Some(b) = f
+                .buildings
+                .iter()
+                .filter(|b| b.buildable_now)
+                .min_by_key(|b| b.wood_cost + b.stone_cost)
+            {
+                return Some(HeuristicPick {
+                    action: Action::FortressUpgradeBuilding {
+                        building: b.name.into(),
+                    },
+                    reason: "heuristic: fortress idle — upgrade cheapest buildable",
+                });
+            }
+        }
+    }
+
+    // 6. Dungeons: free fight on a winnable target.
+    if state.dungeons.off_cooldown && state.dungeons.best_winnable_name.is_some() {
+        return Some(HeuristicPick {
+            action: Action::FightDungeon,
+            reason: "heuristic: free dungeon fight on winnable target",
+        });
+    }
+
+    // 7. Arena fight.
     if state.arena.off_cooldown && !state.arena.enemy_ids.is_empty() {
         return Some(HeuristicPick {
             action: Action::FightArena,
@@ -131,11 +171,10 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     if !idle {
-        // Non-idle without a timer branch (shouldn't happen) — hand off.
         return None;
     }
 
-    // 5. Start expedition.
+    // 8. Start expedition.
     if state.tavern.mode == "expeditions" && state.tavern.active_expedition.is_none() {
         if let Some(exp) = state
             .tavern
@@ -151,18 +190,14 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         }
     }
 
-    // 6. Start quest (highest XP/min we can afford).
+    // 9. Start quest.
     if state.tavern.mode == "quests" && !state.tavern.quests.is_empty() {
         if let Some(q) = state
             .tavern
             .quests
             .iter()
             .filter(|q| state.tavern.thirst_for_adventure_sec >= q.duration_sec)
-            .max_by_key(|q| {
-                // XP per minute, scaled by 1000 to stay integer.
-                let per_min = (q.experience as u64 * 60_000) / (q.duration_sec.max(1) as u64);
-                per_min
-            })
+            .max_by_key(|q| (q.experience as u64 * 60_000) / (q.duration_sec.max(1) as u64))
         {
             return Some(HeuristicPick {
                 action: Action::StartQuest { quest_index: q.index },
@@ -171,7 +206,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         }
     }
 
-    // 7. Guard work if thirst is exhausted.
+    // 10. Guard work if thirst drained.
     if state.tavern.thirst_for_adventure_sec == 0 && idle {
         return Some(HeuristicPick {
             action: Action::StartGuardWork { hours: 10 },
@@ -179,6 +214,5 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         });
     }
 
-    // No clear choice — defer to Claude for nuanced tie-breaking.
     None
 }
