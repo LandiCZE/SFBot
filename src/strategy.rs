@@ -14,7 +14,22 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         || (state.tavern.current_action == "expedition"
             && state.tavern.active_expedition.is_none());
 
-    // 0. Drink main-attr or Con potion if a slot is free.
+    // 0. Equip clear upgrade — do this first so the stat boost applies to
+    //    the very next fight. (Equipping is a swap, so it doesn't free a
+    //    backpack slot — see sell/dismantle below for that.)
+    if let Some(upgrade) = state
+        .backpack
+        .iter()
+        .filter(|b| b.main_stat_delta_vs_equipped.unwrap_or(0) > 0)
+        .max_by_key(|b| b.main_stat_delta_vs_equipped.unwrap_or(0))
+    {
+        return Some(HeuristicPick {
+            action: Action::EquipItem { backpack_slot: upgrade.slot },
+            reason: "heuristic: clear main-stat upgrade in backpack",
+        });
+    }
+
+    // 1. Drink main-attr or Con potion if a slot is free.
     if state.character.active_potion_slot_free {
         let main = state.character.main_attribute;
         let active_kinds: Vec<&str> = state
@@ -48,19 +63,6 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
                 reason: "heuristic: drink main-attr or constitution potion while slot is free",
             });
         }
-    }
-
-    // 1. Equip clear upgrade.
-    if let Some(upgrade) = state
-        .backpack
-        .iter()
-        .filter(|b| b.main_stat_delta_vs_equipped.unwrap_or(0) > 0)
-        .max_by_key(|b| b.main_stat_delta_vs_equipped.unwrap_or(0))
-    {
-        return Some(HeuristicPick {
-            action: Action::EquipItem { backpack_slot: upgrade.slot },
-            reason: "heuristic: clear main-stat upgrade in backpack",
-        });
     }
 
     // 2. Dismantle junk at the blacksmith (preferred over selling if available).
