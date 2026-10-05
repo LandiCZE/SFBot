@@ -12,6 +12,12 @@ on:
         required: false
         default: '1500'
 
+# Never run two bot sessions in parallel — the second would knock the first
+# out of the SSO session. Queue cron-triggered runs; let manual runs cancel.
+concurrency:
+  group: sf-bot
+  cancel-in-progress: false
+
 jobs:
   bot:
     runs-on: ubuntu-latest
