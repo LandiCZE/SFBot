@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use rand::Rng;
-use sf_api::command::{BlacksmithAction, Command, ExpeditionSetting};
+use sf_api::command::{BlacksmithAction, Command, ExpeditionSetting, ShopType};
 use sf_api::gamestate::dungeons::Dungeon;
 use sf_api::gamestate::items::{ItemPosition, PlayerItemPosition};
 use sf_api::gamestate::tavern::ExpeditionStage;
@@ -436,6 +436,13 @@ fn record_and_log(
     Ok(())
 }
 
+fn shop_label(st: ShopType) -> &'static str {
+    match st {
+        ShopType::Weapon => "weapon",
+        ShopType::Magic => "magic",
+    }
+}
+
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
@@ -596,6 +603,64 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
                 .ok_or_else(|| anyhow!("unknown building {building:?}"))?;
             session.send_command(Command::FortressBuild { f_type }).await?;
             Ok(format!("fortress: started upgrade of {building}"))
+        }
+        Action::BuyShopItem { shop, pos } => {
+            let st = match shop.as_str() {
+                "weapon" => ShopType::Weapon,
+                "magic" => ShopType::Magic,
+                other => return Err(anyhow!("unknown shop {other:?}")),
+            };
+            // Build the BuyShop command. Need: ShopPosition, free bag slot, item_ident.
+            let (shop_pos, item_ident, new_pos) = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before buy_shop"))?;
+                let shop = sf_api::misc::EnumMapGet::get(&gs.shops, st);
+                let (sp, item) = shop
+                    .iter()
+                    .find(|(sp, _)| sp.position() == (*pos as usize))
+                    .ok_or_else(|| anyhow!("shop {shop_label} slot {pos} is empty", shop_label = shop_label(st)))?;
+                let bag_pos = gs
+                    .character
+                    .inventory
+                    .free_slot()
+                    .ok_or_else(|| anyhow!("no free backpack slot for buy_shop"))?;
+                (sp, item.command_ident(), PlayerItemPosition::from(bag_pos))
+            };
+            session
+                .send_command(Command::BuyShop {
+                    shop_pos,
+                    new_pos,
+                    item_ident,
+                })
+                .await?;
+            Ok(format!("bought {shop} slot {pos}"))
+        }
+        Action::ClaimTaskChest { track, pos } => {
+            let cmd = match track.as_str() {
+                "daily" => Command::CollectDailyQuestReward { pos: *pos as usize },
+                "event" => Command::CollectEventTaskReward { pos: *pos as usize },
+                other => return Err(anyhow!("unknown track {other:?}")),
+            };
+            session.send_command(cmd).await?;
+            Ok(format!("claimed {track} chest {pos}"))
+        }
+        Action::OpenMail { pos } => {
+            session
+                .send_command(Command::MessageOpen { pos: *pos as i32 })
+                .await?;
+            Ok(format!("opened mail at pos {pos}"))
+        }
+        Action::DeleteAllMail => {
+            // -1 is the server-side "delete all" sentinel.
+            session.send_command(Command::MessageDelete { pos: -1 }).await?;
+            Ok("deleted all mail".to_string())
+        }
+        Action::ClaimPendingMail { msg_id } => {
+            session
+                .send_command(Command::ClaimableClaim { msg_id: *msg_id })
+                .await?;
+            Ok(format!("claimed pending mail {msg_id}"))
         }
         Action::FortressGatherResource { resource } => {
             let r = game::fortress_resource_from_name(resource)

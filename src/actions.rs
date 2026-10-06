@@ -18,6 +18,11 @@ pub enum Action {
     FightDungeon,
     FortressUpgradeBuilding { building: String },
     FortressGatherResource { resource: String },
+    BuyShopItem { shop: String, pos: u8 },
+    ClaimTaskChest { track: String, pos: u8 },
+    OpenMail { pos: u8 },
+    DeleteAllMail,
+    ClaimPendingMail { msg_id: i64 },
     SetQuestingPreference { prefer_quests: bool },
     Wait,
 }
@@ -228,6 +233,63 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
                     "{building} not buildable now (level={}, cost: wood={} stone={} silver={})",
                     b.level, b.wood_cost, b.stone_cost, b.silver_cost
                 ));
+            }
+            Ok(())
+        }
+        Action::BuyShopItem { shop, pos } => {
+            let s = state
+                .shops
+                .iter()
+                .find(|s| s.shop == shop.as_str())
+                .ok_or_else(|| format!("unknown shop {shop:?}"))?;
+            let item = s
+                .items
+                .iter()
+                .find(|i| i.pos == *pos)
+                .ok_or_else(|| format!("shop {shop} slot {pos} is empty"))?;
+            if state.character.silver < item.price_silver as u64 {
+                return Err(format!(
+                    "need {} silver, have {}",
+                    item.price_silver, state.character.silver
+                ));
+            }
+            if state.character.backpack_free_slots == 0 {
+                return Err("backpack is full".into());
+            }
+            Ok(())
+        }
+        Action::ClaimTaskChest { track, pos } => {
+            if *pos >= 3 {
+                return Err("pos must be 0..=2".into());
+            }
+            let claimable = match track.as_str() {
+                "daily" => &state.tasks.daily_claimable_chests,
+                "event" => &state.tasks.event_claimable_chests,
+                other => return Err(format!("unknown track {other:?}")),
+            };
+            if !claimable.contains(pos) {
+                return Err(format!("chest {pos} is not currently claimable on {track}"));
+            }
+            Ok(())
+        }
+        Action::OpenMail { pos } => {
+            if (*pos as usize) >= state.mail.inbox_total {
+                return Err(format!(
+                    "mail pos {pos} out of range (inbox has {})",
+                    state.mail.inbox_total
+                ));
+            }
+            Ok(())
+        }
+        Action::DeleteAllMail => {
+            if state.mail.inbox_total == 0 {
+                return Err("inbox is empty".into());
+            }
+            Ok(())
+        }
+        Action::ClaimPendingMail { msg_id } => {
+            if !state.mail.claimables_pending.contains(msg_id) {
+                return Err(format!("no pending claimable with msg_id {msg_id}"));
             }
             Ok(())
         }

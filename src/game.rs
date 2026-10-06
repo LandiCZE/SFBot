@@ -1,11 +1,12 @@
 use chrono::Local;
 use serde::Serialize;
-use sf_api::command::{AttributeType, ExpeditionSetting};
+use sf_api::command::{AttributeType, ExpeditionSetting, ShopType};
 use sf_api::gamestate::GameState;
 use sf_api::gamestate::character::{Character, Class};
 use sf_api::gamestate::dungeons::{Dungeon, DungeonProgress, LightDungeon, ShadowDungeon};
-use sf_api::gamestate::fortress::{FortressBuildingType, FortressResourceType};
+use sf_api::gamestate::fortress::{FortressBuildingType, FortressResourceType, FortressUnitType};
 use sf_api::gamestate::items::{EquipmentSlot, Item, ItemType, PotionSize, PotionType};
+use sf_api::gamestate::social::ClaimableStatus;
 use sf_api::gamestate::tavern::{AvailableTasks, CurrentAction, ExpeditionStage};
 use sf_api::misc::EnumMapGet;
 
@@ -17,6 +18,9 @@ pub struct StateSummary {
     pub dungeons: DungeonsSummary,
     pub blacksmith: Option<BlacksmithSummary>,
     pub fortress: Option<FortressSummary>,
+    pub shops: Vec<ShopSummary>,
+    pub tasks: TasksSummary,
+    pub mail: MailSummary,
     pub equipment: Vec<EquippedSummary>,
     pub backpack: Vec<BackpackItemSummary>,
 }
@@ -139,6 +143,40 @@ pub struct BlacksmithSummary {
     pub metal: u64,
     pub arcane: u64,
     pub dismantle_left: u8,
+}
+
+#[derive(Serialize)]
+pub struct ShopSummary {
+    pub shop: &'static str, // "weapon" | "magic"
+    pub items: Vec<ShopItemBrief>,
+}
+
+#[derive(Serialize)]
+pub struct ShopItemBrief {
+    pub pos: u8,
+    pub item: ItemBrief,
+    pub price_silver: u32,
+    pub target_equipment_slot: Option<&'static str>,
+    pub main_stat_delta_vs_equipped: Option<i32>,
+    pub can_equip: bool,
+}
+
+#[derive(Serialize)]
+pub struct TasksSummary {
+    pub daily_earned_points: u32,
+    pub daily_total_points: u32,
+    pub daily_claimable_chests: Vec<u8>, // 0-based indices of chests that can be opened
+    pub event_earned_points: u32,
+    pub event_total_points: u32,
+    pub event_claimable_chests: Vec<u8>,
+}
+
+#[derive(Serialize)]
+pub struct MailSummary {
+    pub inbox_total: usize,
+    pub inbox_unread: usize,
+    pub inbox_capacity: u16,
+    pub claimables_pending: Vec<i64>, // msg_id of claimable mail not yet claimed and not expired
 }
 
 #[derive(Serialize)]
@@ -374,6 +412,9 @@ impl StateSummary {
             dismantle_left: b.dismantle_left,
         });
         let fortress = gs.fortress.as_ref().map(|f| fortress_summary(f, ch.silver));
+        let shops = shops_summary(gs, main);
+        let tasks = tasks_summary(gs);
+        let mail = mail_summary(gs);
 
         let equipment: Vec<EquippedSummary> = ch
             .equipment
@@ -450,9 +491,105 @@ impl StateSummary {
             dungeons,
             blacksmith,
             fortress,
+            shops,
+            tasks,
+            mail,
             equipment,
             backpack,
         }
+    }
+}
+
+fn shops_summary(gs: &GameState, main: AttributeType) -> Vec<ShopSummary> {
+    let class = gs.character.class;
+    let equipment = &gs.character.equipment;
+    [ShopType::Weapon, ShopType::Magic]
+        .iter()
+        .map(|&st| {
+            let shop = gs.shops.get(st);
+            let shop_name = match st {
+                ShopType::Weapon => "weapon",
+                ShopType::Magic => "magic",
+            };
+            let items: Vec<ShopItemBrief> = shop
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, item)| {
+                    // Skip placeholder items the game uses for empty slots.
+                    if item.price == 0 || item.price == u32::MAX {
+                        return None;
+                    }
+                    let target_slot = item.typ.equipment_slot();
+                    let delta = target_slot.map(|ts| {
+                        let equipped_score = equipment
+                            .0
+                            .iter()
+                            .find(|(slot, _)| *slot == ts)
+                            .and_then(|(_, it)| it.as_ref())
+                            .map(|it| item_main_stat_score(it, main))
+                            .unwrap_or(0);
+                        let new_score = item_main_stat_score(item, main);
+                        new_score as i32 - equipped_score as i32
+                    });
+                    Some(ShopItemBrief {
+                        pos: i as u8,
+                        item: item_brief(item),
+                        price_silver: item.price,
+                        target_equipment_slot: target_slot.map(slot_name),
+                        main_stat_delta_vs_equipped: delta,
+                        can_equip: item.can_be_equipped_by(class),
+                    })
+                })
+                .collect();
+            ShopSummary {
+                shop: shop_name,
+                items,
+            }
+        })
+        .collect()
+}
+
+fn tasks_summary(gs: &GameState) -> TasksSummary {
+    let tasks = &gs.specials.tasks;
+    let daily_earned = tasks.daily.earned_points();
+    let daily_total = tasks.daily.total_points();
+    let event_earned = tasks.event.earned_points();
+    let event_total = tasks.event.total_points();
+    let daily_claimable: Vec<u8> = (0..3u8)
+        .filter(|&pos| tasks.daily.can_open_chest(pos as usize))
+        .collect();
+    let event_claimable: Vec<u8> = (0..3u8)
+        .filter(|&pos| tasks.event.can_open_chest(pos as usize))
+        .collect();
+    TasksSummary {
+        daily_earned_points: daily_earned,
+        daily_total_points: daily_total,
+        daily_claimable_chests: daily_claimable,
+        event_earned_points: event_earned,
+        event_total_points: event_total,
+        event_claimable_chests: event_claimable,
+    }
+}
+
+fn mail_summary(gs: &GameState) -> MailSummary {
+    let m = &gs.mail;
+    let now = Local::now();
+    let claimables_pending: Vec<i64> = m
+        .claimables
+        .iter()
+        .filter(|c| {
+            c.status != ClaimableStatus::Claimed
+                && c.claimable_until.map(|t| t > now).unwrap_or(true)
+        })
+        .map(|c| c.msg_id)
+        .collect();
+    let unread = m.inbox.iter().filter(|e| !e.read).count();
+    MailSummary {
+        inbox_total: m.inbox.len(),
+        inbox_unread: unread,
+        inbox_capacity: m.inbox_capacity,
+        claimables_pending,
     }
 }
 

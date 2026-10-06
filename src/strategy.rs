@@ -124,6 +124,69 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         });
     }
 
+    // 3c. Claim task chests (free rewards: silver, mushrooms via chest, items).
+    for &pos in &state.tasks.daily_claimable_chests {
+        return Some(HeuristicPick {
+            action: Action::ClaimTaskChest {
+                track: "daily".into(),
+                pos,
+            },
+            reason: "heuristic: unclaimed daily chest reward",
+        });
+    }
+    for &pos in &state.tasks.event_claimable_chests {
+        return Some(HeuristicPick {
+            action: Action::ClaimTaskChest {
+                track: "event".into(),
+                pos,
+            },
+            reason: "heuristic: unclaimed event chest reward",
+        });
+    }
+
+    // 3d. Claim pending mail attachments before they expire.
+    if let Some(&msg_id) = state.mail.claimables_pending.first() {
+        return Some(HeuristicPick {
+            action: Action::ClaimPendingMail { msg_id },
+            reason: "heuristic: pending mail attachment to claim",
+        });
+    }
+
+    // 3e. Open unread mail (first unread; delete-all later as housekeeping).
+    if state.mail.inbox_unread > 0 && state.mail.inbox_total > 0 {
+        // Open the first entry — unread entries tend to be at the top; a
+        // single pos=0 Open suffices and the inbox position shifts semantics
+        // after each read anyway.
+        return Some(HeuristicPick {
+            action: Action::OpenMail { pos: 0 },
+            reason: "heuristic: open unread mail",
+        });
+    }
+
+    // 3f. Shop upgrade: buy clear upgrade with silver, enough headroom.
+    if state.character.backpack_free_slots > 0 {
+        if let Some((shop_name, pos)) = state
+            .shops
+            .iter()
+            .flat_map(|s| s.items.iter().map(move |it| (s.shop, it)))
+            .filter(|(_, it)| {
+                it.can_equip
+                    && it.main_stat_delta_vs_equipped.unwrap_or(0) > 0
+                    && (it.price_silver as u64) * 4 <= state.character.silver
+            })
+            .max_by_key(|(_, it)| it.main_stat_delta_vs_equipped.unwrap_or(0))
+            .map(|(s, it)| (s, it.pos))
+        {
+            return Some(HeuristicPick {
+                action: Action::BuyShopItem {
+                    shop: shop_name.into(),
+                    pos,
+                },
+                reason: "heuristic: shop item is a main-stat upgrade and <= silver/4",
+            });
+        }
+    }
+
     // 4. Fortress: gather overflowing resource.
     if let Some(f) = state.fortress.as_ref() {
         for (name, cur, lim) in [
@@ -174,6 +237,16 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         return Some(HeuristicPick {
             action: Action::FightArena,
             reason: "heuristic: arena off cooldown + opponents visible",
+        });
+    }
+
+    // 7b. Housekeeping: trim inbox once it crosses 80% of capacity.
+    if state.mail.inbox_capacity > 0
+        && state.mail.inbox_total * 10 >= state.mail.inbox_capacity as usize * 8
+    {
+        return Some(HeuristicPick {
+            action: Action::DeleteAllMail,
+            reason: "heuristic: inbox ≥ 80% full — delete all",
         });
     }
 
