@@ -312,6 +312,67 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         }
     }
 
+    // 5d. Pets: feed any hungry pet of a habitat with fruit in the wallet.
+    if let Some(pets) = state.pets.as_ref() {
+        for h in pets.habitats.iter() {
+            if h.fruits_wallet == 0 {
+                continue;
+            }
+            if let Some(&pet_id) = h.hungry_pet_ids.first() {
+                return Some(HeuristicPick {
+                    action: Action::FeedPet {
+                        pet_id,
+                        habitat: h.name.into(),
+                    },
+                    reason: "heuristic: feed hungry pet (fruit wallet > 0, below max level)",
+                });
+            }
+        }
+    }
+
+    // 5e. Pets: habitat PvE on free timer, pick a habitat we can still progress.
+    if let Some(pets) = state.pets.as_ref() {
+        if pets.next_free_exploration_sec_remaining.unwrap_or(0) <= 0 {
+            if let Some(h) = pets
+                .habitats
+                .iter()
+                .find(|h| !h.is_finished && h.strongest_pet_id.is_some())
+            {
+                return Some(HeuristicPick {
+                    action: Action::FightPetHabitat {
+                        habitat: h.name.into(),
+                    },
+                    reason: "heuristic: pet habitat exploration free + has pet to send",
+                });
+            }
+        }
+    }
+
+    // 5f. Pets: daily PvP if we have a clear advantage (my-habitat total level
+    //     > opponent's level_total × 1.2).
+    if let Some(pets) = state.pets.as_ref() {
+        if let Some(o) = pets.opponent.as_ref() {
+            if o.next_free_battle_sec_remaining.unwrap_or(0) <= 0 {
+                if let Some(habitat) = o.habitat {
+                    if let Some(h) = pets.habitats.iter().find(|h| h.name == habitat) {
+                        if !h.battled_opponent_today {
+                            let my_strength =
+                                (h.strongest_pet_level as u32) * 20u32; // rough proxy
+                            if my_strength > (o.level_total as f32 * 1.2) as u32 {
+                                return Some(HeuristicPick {
+                                    action: Action::FightPetOpponent {
+                                        habitat: habitat.into(),
+                                    },
+                                    reason: "heuristic: pet PvP opponent set, clear advantage",
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 6. Dungeons: free fight on a winnable target.
     if state.dungeons.off_cooldown && state.dungeons.best_winnable_name.is_some() {
         return Some(HeuristicPick {

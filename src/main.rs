@@ -637,6 +637,74 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
             session.send_command(Command::FortressBuild { f_type }).await?;
             Ok(format!("fortress: started upgrade of {building}"))
         }
+        Action::FeedPet { pet_id, habitat } => {
+            let h = game::habitat_from_name(habitat)
+                .ok_or_else(|| anyhow!("unknown habitat {habitat:?}"))?;
+            let fruit_idx = h as u32 + 1;
+            session
+                .send_command(Command::PetFeed {
+                    pet_id: *pet_id,
+                    fruit_idx,
+                })
+                .await?;
+            Ok(format!("fed pet {pet_id} ({habitat})"))
+        }
+        Action::FightPetHabitat { habitat } => {
+            let h = game::habitat_from_name(habitat)
+                .ok_or_else(|| anyhow!("unknown habitat {habitat:?}"))?;
+            let (enemy_pos, pet_id) = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before pet habitat fight"))?;
+                let pets = gs.pets.as_ref().ok_or_else(|| anyhow!("pets not unlocked"))?;
+                let hab = sf_api::misc::EnumMapGet::get(&pets.habitats, h);
+                let enemy_pos = match hab.exploration {
+                    sf_api::gamestate::unlockables::HabitatExploration::Exploring { fights_won, .. } => {
+                        (fights_won + 1) as u32
+                    }
+                    _ => return Err(anyhow!("habitat not in Exploring state")),
+                };
+                let pet_id = hab
+                    .pets
+                    .iter()
+                    .filter(|p| p.level > 0)
+                    .max_by_key(|p| p.level)
+                    .map(|p| p.id)
+                    .ok_or_else(|| anyhow!("no pet to send"))?;
+                (enemy_pos, pet_id)
+            };
+            session
+                .send_command(Command::FightPetDungeon {
+                    use_mush: false,
+                    habitat: h,
+                    enemy_pos,
+                    player_pet_id: pet_id,
+                })
+                .await?;
+            Ok(format!("pet dungeon fight ({habitat}) floor {enemy_pos}"))
+        }
+        Action::FightPetOpponent { habitat } => {
+            let h = game::habitat_from_name(habitat)
+                .ok_or_else(|| anyhow!("unknown habitat {habitat:?}"))?;
+            let opponent_id = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before pet pvp"))?;
+                gs.pets
+                    .as_ref()
+                    .map(|p| p.opponent.id)
+                    .filter(|&id| id != 0)
+                    .ok_or_else(|| anyhow!("no pet opponent"))?
+            };
+            let _ = (h, opponent_id);
+            session
+                .send_command(Command::FightPetOpponent {
+                    habitat: h,
+                    opponent_id,
+                })
+                .await?;
+            Ok(format!("pet PvP in {habitat}"))
+        }
         Action::BuyShopItem { shop, pos } => {
             let st = match shop.as_str() {
                 "weapon" => ShopType::Weapon,

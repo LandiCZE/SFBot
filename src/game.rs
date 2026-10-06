@@ -8,7 +8,11 @@ use sf_api::gamestate::fortress::{FortressBuildingType, FortressResourceType, Fo
 use sf_api::gamestate::items::{EquipmentSlot, Item, ItemType, PotionSize, PotionType};
 use sf_api::gamestate::social::ClaimableStatus;
 use sf_api::gamestate::tavern::{AvailableTasks, CurrentAction, ExpeditionStage};
+use sf_api::gamestate::unlockables::{HabitatExploration, HabitatType};
 use sf_api::misc::EnumMapGet;
+
+/// Daily per-pet fruit-feed cap in the official client (approximate).
+pub const PET_DAILY_FEED_CAP: u16 = 5;
 
 #[derive(Serialize)]
 pub struct StateSummary {
@@ -21,8 +25,42 @@ pub struct StateSummary {
     pub shops: Vec<ShopSummary>,
     pub tasks: TasksSummary,
     pub mail: MailSummary,
+    pub pets: Option<PetsSummary>,
     pub equipment: Vec<EquippedSummary>,
     pub backpack: Vec<BackpackItemSummary>,
+}
+
+#[derive(Serialize)]
+pub struct PetsSummary {
+    pub rank: u32,
+    pub honor: u32,
+    pub total_collected: u16,
+    pub max_pet_level: u16,
+    pub next_free_exploration_sec_remaining: Option<i64>,
+    pub habitats: Vec<PetHabitatSummary>,
+    pub opponent: Option<PetOpponentSummary>,
+}
+
+#[derive(Serialize)]
+pub struct PetHabitatSummary {
+    pub name: &'static str,
+    pub fruits_wallet: u16,
+    pub fights_won: u32,
+    pub is_finished: bool,
+    pub next_fight_lvl: Option<u16>,
+    pub battled_opponent_today: bool,
+    pub hungry_pet_ids: Vec<u32>,
+    pub strongest_pet_id: Option<u32>,
+    pub strongest_pet_level: u16,
+}
+
+#[derive(Serialize)]
+pub struct PetOpponentSummary {
+    pub pid: u32,
+    pub habitat: Option<&'static str>,
+    pub next_free_battle_sec_remaining: Option<i64>,
+    pub pet_count: u32,
+    pub level_total: u32,
 }
 
 #[derive(Serialize)]
@@ -435,6 +473,7 @@ impl StateSummary {
         let shops = shops_summary(gs, main);
         let tasks = tasks_summary(gs);
         let mail = mail_summary(gs);
+        let pets = gs.pets.as_ref().map(pets_summary);
 
         let equipment: Vec<EquippedSummary> = ch
             .equipment
@@ -514,10 +553,106 @@ impl StateSummary {
             shops,
             tasks,
             mail,
+            pets,
             equipment,
             backpack,
         }
     }
+}
+
+fn pets_summary(p: &sf_api::gamestate::unlockables::Pets) -> PetsSummary {
+    let next_free_exploration_sec_remaining = p
+        .next_free_exploration
+        .map(|t| (t - Local::now()).num_seconds());
+
+    let habitats: Vec<PetHabitatSummary> = [
+        HabitatType::Shadow,
+        HabitatType::Light,
+        HabitatType::Earth,
+        HabitatType::Fire,
+        HabitatType::Water,
+    ]
+    .iter()
+    .map(|&h| {
+        let hab = p.habitats.get(h);
+        let (is_finished, next_fight_lvl, fights_won) = match hab.exploration {
+            HabitatExploration::Finished => (true, None, 20),
+            HabitatExploration::Exploring { fights_won, next_fight_lvl } => {
+                (false, Some(next_fight_lvl), fights_won)
+            }
+        };
+        let hungry_pet_ids: Vec<u32> = hab
+            .pets
+            .iter()
+            .filter(|pet| pet.level > 0 && pet.level < p.max_pet_level && pet.fruits_today < PET_DAILY_FEED_CAP)
+            .map(|pet| pet.id)
+            .collect();
+        let strongest = hab
+            .pets
+            .iter()
+            .filter(|pet| pet.level > 0)
+            .max_by_key(|pet| pet.level);
+        PetHabitatSummary {
+            name: habitat_name(h),
+            fruits_wallet: hab.fruits,
+            fights_won,
+            is_finished,
+            next_fight_lvl,
+            battled_opponent_today: hab.battled_opponent,
+            hungry_pet_ids,
+            strongest_pet_id: strongest.map(|pet| pet.id),
+            strongest_pet_level: strongest.map(|pet| pet.level).unwrap_or(0),
+        }
+    })
+    .collect();
+
+    let opponent = {
+        let o = &p.opponent;
+        if o.id == 0 {
+            None
+        } else {
+            Some(PetOpponentSummary {
+                pid: o.id,
+                habitat: o.habitat.map(habitat_name),
+                next_free_battle_sec_remaining: o
+                    .next_free_battle
+                    .map(|t| (t - Local::now()).num_seconds()),
+                pet_count: o.pet_count,
+                level_total: o.level_total,
+            })
+        }
+    };
+
+    PetsSummary {
+        rank: p.rank,
+        honor: p.honor,
+        total_collected: p.total_collected,
+        max_pet_level: p.max_pet_level,
+        next_free_exploration_sec_remaining,
+        habitats,
+        opponent,
+    }
+}
+
+pub fn habitat_name(h: HabitatType) -> &'static str {
+    match h {
+        HabitatType::Shadow => "shadow",
+        HabitatType::Light => "light",
+        HabitatType::Earth => "earth",
+        HabitatType::Fire => "fire",
+        HabitatType::Water => "water",
+    }
+}
+
+pub fn habitat_from_name(n: &str) -> Option<HabitatType> {
+    Some(match n {
+        "shadow" => HabitatType::Shadow,
+        "light" => HabitatType::Light,
+        "earth" => HabitatType::Earth,
+        "fire" => HabitatType::Fire,
+        "water" => HabitatType::Water,
+        _ => return None,
+    })
 }
 
 fn shops_summary(gs: &GameState, main: AttributeType) -> Vec<ShopSummary> {

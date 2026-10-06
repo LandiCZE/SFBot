@@ -22,6 +22,9 @@ pub enum Action {
     FortressUpgradeUnit { unit: String },
     FortressAttack,
     FortressRerollEnemy,
+    FeedPet { pet_id: u32, habitat: String },
+    FightPetHabitat { habitat: String },
+    FightPetOpponent { habitat: String },
     BuyShopItem { shop: String, pos: u8 },
     ClaimTaskChest { track: String, pos: u8 },
     OpenMail { pos: u8 },
@@ -237,6 +240,80 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
                     "{building} not buildable now (level={}, cost: wood={} stone={} silver={})",
                     b.level, b.wood_cost, b.stone_cost, b.silver_cost
                 ));
+            }
+            Ok(())
+        }
+        Action::FeedPet { pet_id, habitat } => {
+            let p = state
+                .pets
+                .as_ref()
+                .ok_or_else(|| "pets not unlocked".to_string())?;
+            let h = p
+                .habitats
+                .iter()
+                .find(|h| h.name == habitat.as_str())
+                .ok_or_else(|| format!("unknown habitat {habitat:?}"))?;
+            if h.fruits_wallet == 0 {
+                return Err(format!("no {habitat} fruit in wallet"));
+            }
+            if !h.hungry_pet_ids.contains(pet_id) {
+                return Err(format!(
+                    "pet {pet_id} is not hungry (or not in {habitat})"
+                ));
+            }
+            Ok(())
+        }
+        Action::FightPetHabitat { habitat } => {
+            let p = state
+                .pets
+                .as_ref()
+                .ok_or_else(|| "pets not unlocked".to_string())?;
+            if p.next_free_exploration_sec_remaining
+                .map(|s| s > 0)
+                .unwrap_or(false)
+            {
+                return Err("pet exploration is on cooldown".into());
+            }
+            let h = p
+                .habitats
+                .iter()
+                .find(|h| h.name == habitat.as_str())
+                .ok_or_else(|| format!("unknown habitat {habitat:?}"))?;
+            if h.is_finished {
+                return Err(format!("{habitat} habitat already finished"));
+            }
+            if h.strongest_pet_id.is_none() {
+                return Err(format!("no unlocked pet in {habitat} to send"));
+            }
+            Ok(())
+        }
+        Action::FightPetOpponent { habitat } => {
+            let p = state
+                .pets
+                .as_ref()
+                .ok_or_else(|| "pets not unlocked".to_string())?;
+            let o = p
+                .opponent
+                .as_ref()
+                .ok_or_else(|| "no pet opponent set".to_string())?;
+            if o.habitat != Some(habitat.as_str())
+                && o.habitat.map(|s| s.to_string()) != Some(habitat.clone())
+            {
+                return Err(format!(
+                    "opponent is in habitat {:?}, not {habitat}",
+                    o.habitat
+                ));
+            }
+            if o.next_free_battle_sec_remaining.map(|s| s > 0).unwrap_or(false) {
+                return Err("pet PvP is on cooldown".into());
+            }
+            let h = p
+                .habitats
+                .iter()
+                .find(|h| h.name == habitat.as_str())
+                .ok_or_else(|| format!("unknown habitat {habitat:?}"))?;
+            if h.battled_opponent_today {
+                return Err(format!("already battled {habitat} opponent today"));
             }
             Ok(())
         }
