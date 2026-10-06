@@ -31,8 +31,37 @@ pub struct StateSummary {
     pub underworld: Option<UnderworldSummary>,
     pub hellevator: HellevatorSummary,
     pub legendary_dungeon: LegendaryDungeonSummary,
+    pub witch: Option<WitchSummary>,
+    pub toilet: Option<ToiletSummary>,
+    pub upgradable_equipped: Vec<UpgradableItemBrief>,
     pub equipment: Vec<EquippedSummary>,
     pub backpack: Vec<BackpackItemSummary>,
+}
+
+#[derive(Serialize)]
+pub struct WitchSummary {
+    pub required_slot: Option<&'static str>,
+    pub cauldron_bubbling: bool,
+    pub progress: u32,
+    pub enchantment_price_silver: u64,
+}
+
+#[derive(Serialize)]
+pub struct ToiletSummary {
+    pub aura: u32,
+    pub mana_currently: u32,
+    pub mana_total: u32,
+    pub ready_to_flush: bool,
+}
+
+#[derive(Serialize)]
+pub struct UpgradableItemBrief {
+    pub slot: &'static str,
+    pub upgrade_count: u8,
+    pub metal_cost: u64,
+    pub arcane_cost: u64,
+    pub is_epic: bool,
+    pub affordable: bool,
 }
 
 #[derive(Serialize)]
@@ -566,6 +595,9 @@ impl StateSummary {
             .map(|uw| underworld_summary(uw, ch.silver));
         let hellevator = hellevator_summary(gs);
         let legendary_dungeon = legendary_summary(gs);
+        let witch = gs.witch.as_ref().map(witch_summary);
+        let toilet = gs.tavern.toilet.as_ref().map(toilet_summary);
+        let upgradable_equipped = upgradable_equipped_items(gs);
 
         let equipment: Vec<EquippedSummary> = ch
             .equipment
@@ -649,10 +681,57 @@ impl StateSummary {
             underworld,
             hellevator,
             legendary_dungeon,
+            witch,
+            toilet,
+            upgradable_equipped,
             equipment,
             backpack,
         }
     }
+}
+
+fn witch_summary(w: &sf_api::gamestate::unlockables::Witch) -> WitchSummary {
+    WitchSummary {
+        required_slot: w.required_item.map(slot_name),
+        cauldron_bubbling: w.cauldron_bubbling,
+        progress: w.progress,
+        enchantment_price_silver: w.enchantment_price,
+    }
+}
+
+fn toilet_summary(t: &sf_api::gamestate::tavern::Toilet) -> ToiletSummary {
+    ToiletSummary {
+        aura: t.aura,
+        mana_currently: t.mana_currently,
+        mana_total: t.mana_total,
+        ready_to_flush: t.mana_currently >= t.mana_total && t.mana_total > 0,
+    }
+}
+
+fn upgradable_equipped_items(gs: &GameState) -> Vec<UpgradableItemBrief> {
+    let bs = match gs.blacksmith.as_ref() {
+        Some(b) => b,
+        None => return Vec::new(),
+    };
+    gs.character
+        .equipment
+        .0
+        .iter()
+        .filter_map(|(slot, item_opt)| {
+            let item = item_opt.as_ref()?;
+            let cost = item.upgrade_costs()?;
+            let is_epic =
+                item.attributes.as_slice().iter().filter(|&&a| a > 0).count() >= 4;
+            Some(UpgradableItemBrief {
+                slot: slot_name(slot),
+                upgrade_count: item.upgrade_count,
+                metal_cost: cost.metal,
+                arcane_cost: cost.arcane,
+                is_epic,
+                affordable: bs.metal >= cost.metal && bs.arcane >= cost.arcane,
+            })
+        })
+        .collect()
 }
 
 fn hellevator_summary(gs: &GameState) -> HellevatorSummary {

@@ -70,6 +70,41 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         }
     }
 
+    // 1a. Witch: drop a junk item matching required_slot (progresses enchant unlock).
+    if let Some(w) = state.witch.as_ref() {
+        if let Some(required_slot) = w.required_slot {
+            if !w.cauldron_bubbling {
+                if let Some(b) = state.backpack.iter().find(|b| {
+                    b.is_junk && b.target_equipment_slot == Some(required_slot)
+                }) {
+                    return Some(HeuristicPick {
+                        action: Action::WitchDropItem { backpack_slot: b.slot },
+                        reason: "heuristic: drop junk into witch cauldron (matches required slot)",
+                    });
+                }
+            }
+        }
+    }
+
+    // 1b. Toilet: flush when ready, feed junk when hungry.
+    if let Some(t) = state.toilet.as_ref() {
+        if t.ready_to_flush {
+            return Some(HeuristicPick {
+                action: Action::ToiletFlush,
+                reason: "heuristic: toilet mana full — flush for aura",
+            });
+        }
+        // Feed a junk item (slow lane; dismantle/sell preferred first).
+        if state.blacksmith.as_ref().map(|b| b.dismantle_left == 0).unwrap_or(true) {
+            if let Some(b) = state.backpack.iter().find(|b| b.is_junk) {
+                return Some(HeuristicPick {
+                    action: Action::ToiletDropItem { backpack_slot: b.slot },
+                    reason: "heuristic: feed junk to toilet (dismantle exhausted / blacksmith missing)",
+                });
+            }
+        }
+    }
+
     // 2. Dismantle junk at the blacksmith (preferred over selling if available).
     if let Some(junk) = state
         .backpack

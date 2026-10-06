@@ -23,6 +23,11 @@ pub enum Action {
     HellevatorClaimDaily,
     HellevatorClaimDailyYesterday,
     HellevatorClaimFinal,
+    WitchDropItem { backpack_slot: usize },
+    ToiletOpen,
+    ToiletDropItem { backpack_slot: usize },
+    ToiletFlush,
+    BlacksmithUpgradeEquipped { slot: String },
     UnderworldUpgradeBuilding { building: String },
     UnderworldGatherResource { resource: String },
     UnderworldUpgradeUnit { unit: String },
@@ -229,6 +234,64 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
             }
             if state.dungeons.best_winnable_name.is_none() {
                 return Err("no winnable dungeon within safe-margin".into());
+            }
+            Ok(())
+        }
+        Action::WitchDropItem { backpack_slot } => {
+            let w = state
+                .witch
+                .as_ref()
+                .ok_or_else(|| "witch not unlocked".to_string())?;
+            let required = w
+                .required_slot
+                .ok_or_else(|| "witch cauldron is bubbling — enchant instead of dropping".to_string())?;
+            let b = backpack_item(*backpack_slot, state)?;
+            if b.target_equipment_slot != Some(required) {
+                return Err(format!(
+                    "slot {backpack_slot} item is for slot {:?}, witch wants {required}",
+                    b.target_equipment_slot
+                ));
+            }
+            Ok(())
+        }
+        Action::ToiletOpen => {
+            if state.toilet.is_some() {
+                return Err("toilet already open".into());
+            }
+            Ok(())
+        }
+        Action::ToiletDropItem { backpack_slot } => {
+            state
+                .toilet
+                .as_ref()
+                .ok_or_else(|| "toilet not open".to_string())?;
+            backpack_item(*backpack_slot, state)?;
+            Ok(())
+        }
+        Action::ToiletFlush => {
+            let t = state
+                .toilet
+                .as_ref()
+                .ok_or_else(|| "toilet not open".to_string())?;
+            if !t.ready_to_flush {
+                return Err(format!(
+                    "toilet mana {}/{} — not ready",
+                    t.mana_currently, t.mana_total
+                ));
+            }
+            Ok(())
+        }
+        Action::BlacksmithUpgradeEquipped { slot } => {
+            let u = state
+                .upgradable_equipped
+                .iter()
+                .find(|u| u.slot == slot.as_str())
+                .ok_or_else(|| format!("no upgradable item in slot {slot:?}"))?;
+            if !u.affordable {
+                return Err(format!(
+                    "need metal {} arcane {} for {slot} upgrade",
+                    u.metal_cost, u.arcane_cost
+                ));
             }
             Ok(())
         }

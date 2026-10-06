@@ -702,6 +702,96 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
                 .await?;
             Ok(format!("fought dungeon {dungeon_name}"))
         }
+        Action::WitchDropItem { backpack_slot } => {
+            let item_pos = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before witch drop"))?;
+                let bag_pos = gs
+                    .character
+                    .inventory
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, (bp, io))| {
+                        io.and_then(|_| if i + 1 == *backpack_slot { Some(bp) } else { None })
+                    })
+                    .ok_or_else(|| anyhow!("backpack slot {backpack_slot} empty at execute"))?;
+                PlayerItemPosition::from(bag_pos)
+            };
+            session
+                .send_command(Command::WitchDropCauldron { item_pos })
+                .await?;
+            Ok(format!("dropped slot {backpack_slot} into witch cauldron"))
+        }
+        Action::ToiletOpen => {
+            session.send_command(Command::ToiletOpen).await?;
+            Ok("opened toilet".to_string())
+        }
+        Action::ToiletDropItem { backpack_slot } => {
+            let item_pos = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before toilet drop"))?;
+                let bag_pos = gs
+                    .character
+                    .inventory
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, (bp, io))| {
+                        io.and_then(|_| if i + 1 == *backpack_slot { Some(bp) } else { None })
+                    })
+                    .ok_or_else(|| anyhow!("backpack slot {backpack_slot} empty at execute"))?;
+                PlayerItemPosition::from(bag_pos)
+            };
+            session
+                .send_command(Command::ToiletDrop { item_pos })
+                .await?;
+            Ok(format!("dropped slot {backpack_slot} into toilet"))
+        }
+        Action::ToiletFlush => {
+            session.send_command(Command::ToiletFlush).await?;
+            Ok("flushed toilet".to_string())
+        }
+        Action::BlacksmithUpgradeEquipped { slot } => {
+            // Convert slot name back to EquipmentSlot, build command.
+            use sf_api::gamestate::items::EquipmentSlot;
+            let eq_slot = match slot.as_str() {
+                "hat" => EquipmentSlot::Hat,
+                "chest" => EquipmentSlot::BreastPlate,
+                "gloves" => EquipmentSlot::Gloves,
+                "boots" => EquipmentSlot::FootWear,
+                "amulet" => EquipmentSlot::Amulet,
+                "belt" => EquipmentSlot::Belt,
+                "ring" => EquipmentSlot::Ring,
+                "talisman" => EquipmentSlot::Talisman,
+                "weapon" => EquipmentSlot::Weapon,
+                "offhand" => EquipmentSlot::Shield,
+                other => return Err(anyhow!("unknown equipment slot {other:?}")),
+            };
+            let item_ident = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before blacksmith upgrade"))?;
+                let (_, item) = gs
+                    .character
+                    .equipment
+                    .0
+                    .iter()
+                    .find(|(s, _)| *s == eq_slot)
+                    .ok_or_else(|| anyhow!("no equipped item in slot {slot}"))?;
+                item.as_ref()
+                    .ok_or_else(|| anyhow!("equipment slot {slot} is empty"))?
+                    .command_ident()
+            };
+            session
+                .send_command(Command::Blacksmith {
+                    item_pos: PlayerItemPosition::from(eq_slot),
+                    action: BlacksmithAction::Upgrade,
+                    item_ident,
+                })
+                .await?;
+            Ok(format!("blacksmith upgraded equipped {slot}"))
+        }
         Action::HellevatorEnter => {
             session.send_command(Command::HellevatorEnter).await?;
             Ok("entered hellevator".to_string())
