@@ -105,20 +105,30 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         }
     }
 
-    // 2. Dismantle junk at the blacksmith (preferred over selling if available).
+    // 2. Dismantle junk at the blacksmith (preferred over selling when truly
+    //    available). sf-api creates a Blacksmith object from the resources
+    //    packet even before the building is unlocked, so Option alone is NOT a
+    //    reliable gate. Require character level >= 10 (official unlock) AND
+    //    dismantle_left > 0 AND some sign of blacksmith activity (metal or
+    //    arcane > 0, or dismantle count > 0 — i.e. the server has told us
+    //    something non-default about the building).
     if let Some(junk) = state
         .backpack
         .iter()
         .filter(|b| b.is_junk)
         .max_by_key(|b| b.sell_price_silver)
     {
-        if let Some(bs) = state.blacksmith.as_ref() {
-            if bs.dismantle_left > 0 {
-                return Some(HeuristicPick {
-                    action: Action::DismantleItem { backpack_slot: junk.slot },
-                    reason: "heuristic: dismantle junk at blacksmith (metal/arcane > silver)",
-                });
-            }
+        let blacksmith_usable = state.character.level >= 10
+            && state
+                .blacksmith
+                .as_ref()
+                .map(|b| b.dismantle_left > 0 && (b.metal > 0 || b.arcane > 0 || b.dismantle_left >= 2))
+                .unwrap_or(false);
+        if blacksmith_usable {
+            return Some(HeuristicPick {
+                action: Action::DismantleItem { backpack_slot: junk.slot },
+                reason: "heuristic: dismantle junk at blacksmith (metal/arcane > silver)",
+            });
         }
         return Some(HeuristicPick {
             action: Action::SellItem { backpack_slot: junk.slot },
