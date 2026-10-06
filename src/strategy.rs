@@ -14,10 +14,35 @@ pub struct HeuristicPick {
     pub reason: &'static str,
 }
 
+// Character-level gates for features. sf-api can surface stub Option values
+// from resource packets before the building is truly playable; gate every
+// unlockable system by the real unlock level so no action fires too early.
+const UNLOCK_BLACKSMITH: u16 = 10;
+const UNLOCK_TOILET: u16 = 15;
+const UNLOCK_FORTRESS: u16 = 25;
+const UNLOCK_UNDERWORLD: u16 = 25;
+const UNLOCK_PETS: u16 = 55;
+const UNLOCK_WITCH: u16 = 66;
+const UNLOCK_PORTAL: u16 = 99;
+
 pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     let idle = state.tavern.current_action == "idle"
         || (state.tavern.current_action == "expedition"
             && state.tavern.active_expedition.is_none());
+
+    // Mask each unlockable Option by the character's level. Use these shadows
+    // in place of `state.X.as_ref()` throughout the function.
+    let lvl = state.character.level;
+    let witch_opt = state.witch.as_ref().filter(|_| lvl >= UNLOCK_WITCH);
+    let toilet_opt = state.toilet.as_ref().filter(|_| lvl >= UNLOCK_TOILET);
+    let fortress_opt = state.fortress.as_ref().filter(|_| lvl >= UNLOCK_FORTRESS);
+    let underworld_opt = state.underworld.as_ref().filter(|_| lvl >= UNLOCK_UNDERWORLD);
+    let pets_opt = state.pets.as_ref().filter(|_| lvl >= UNLOCK_PETS);
+    let portal_opt = state
+        .dungeons
+        .portal
+        .as_ref()
+        .filter(|_| lvl >= UNLOCK_PORTAL);
 
     // 0. Equip clear upgrade — do this first so the stat boost applies to
     //    the very next fight. (Equipping is a swap, so it doesn't free a
@@ -32,6 +57,22 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
             action: Action::EquipItem { backpack_slot: upgrade.slot },
             reason: "heuristic: clear main-stat upgrade in backpack",
         });
+    }
+
+    // 0b. Blacksmith: upgrade cheapest affordable equipped item (prefers epics).
+    //     Gated on Blacksmith unlock level.
+    if lvl >= UNLOCK_BLACKSMITH {
+        if let Some(u) = state
+            .upgradable_equipped
+            .iter()
+            .filter(|u| u.affordable && u.upgrade_count < 15)
+            .min_by_key(|u| (u.metal_cost + u.arcane_cost * 10, !u.is_epic as u8))
+        {
+            return Some(HeuristicPick {
+                action: Action::BlacksmithUpgradeEquipped { slot: u.slot.into() },
+                reason: "heuristic: blacksmith upgrade affordable on equipped item",
+            });
+        }
     }
 
     // 1. Drink main-attr or Con potion if a slot is free.
@@ -71,7 +112,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 1a. Witch: drop a junk item matching required_slot (progresses enchant unlock).
-    if let Some(w) = state.witch.as_ref() {
+    if let Some(w) = witch_opt {
         if let Some(required_slot) = w.required_slot {
             if !w.cauldron_bubbling {
                 if let Some(b) = state.backpack.iter().find(|b| {
@@ -87,7 +128,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 1b. Toilet: flush when ready, feed junk when hungry.
-    if let Some(t) = state.toilet.as_ref() {
+    if let Some(t) = toilet_opt {
         if t.ready_to_flush {
             return Some(HeuristicPick {
                 action: Action::ToiletFlush,
@@ -118,7 +159,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         .filter(|b| b.is_junk)
         .max_by_key(|b| b.sell_price_silver)
     {
-        let blacksmith_usable = state.character.level >= 10
+        let blacksmith_usable = lvl >= UNLOCK_BLACKSMITH
             && state
                 .blacksmith
                 .as_ref()
@@ -233,7 +274,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 4. Fortress: gather overflowing resource.
-    if let Some(f) = state.fortress.as_ref() {
+    if let Some(f) = fortress_opt {
         for (name, cur, lim) in [
             ("wood", f.wood_current, f.wood_limit),
             ("stone", f.stone_current, f.stone_limit),
@@ -251,7 +292,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 5. Fortress: upgrade cheapest buildable if no upgrade in progress.
-    if let Some(f) = state.fortress.as_ref() {
+    if let Some(f) = fortress_opt {
         if f.upgrade_in_progress.is_none() {
             if let Some(b) = f
                 .buildings
@@ -271,7 +312,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
 
     // 5a. Fortress: train missing units when the training building exists,
     //     slot is free, and we can afford at least a small batch.
-    if let Some(f) = state.fortress.as_ref() {
+    if let Some(f) = fortress_opt {
         for u in f.units.iter() {
             if !u.has_training_building {
                 continue;
@@ -308,7 +349,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 5b. Fortress: attack when we have a target and are strong enough.
-    if let Some(f) = state.fortress.as_ref() {
+    if let Some(f) = fortress_opt {
         if f.attack_target_present
             && f.attack_target_soldier_advice.is_some()
             && !matches!(
@@ -341,7 +382,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 5b2. Underworld: gather any resource near its cap.
-    if let Some(uw) = state.underworld.as_ref() {
+    if let Some(uw) = underworld_opt {
         for r in uw.resources.iter() {
             if r.limit > 0 && r.current * 10 >= r.limit * 9 {
                 return Some(HeuristicPick {
@@ -355,7 +396,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 5b3. Underworld: upgrade cheapest buildable when idle.
-    if let Some(uw) = state.underworld.as_ref() {
+    if let Some(uw) = underworld_opt {
         if uw.upgrade_in_progress.is_none() {
             if let Some(b) = uw
                 .buildings
@@ -374,7 +415,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 5c. Fortress: reroll a too-strong target when the reroll is free.
-    if let Some(f) = state.fortress.as_ref() {
+    if let Some(f) = fortress_opt {
         if f.attack_target_present && f.attack_reroll_free {
             if let (Some(advice), Some(count)) = (
                 f.attack_target_soldier_advice,
@@ -391,7 +432,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 5d. Pets: feed any hungry pet of a habitat with fruit in the wallet.
-    if let Some(pets) = state.pets.as_ref() {
+    if let Some(pets) = pets_opt {
         for h in pets.habitats.iter() {
             if h.fruits_wallet == 0 {
                 continue;
@@ -409,7 +450,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 5e. Pets: habitat PvE on free timer, pick a habitat we can still progress.
-    if let Some(pets) = state.pets.as_ref() {
+    if let Some(pets) = pets_opt {
         if pets.next_free_exploration_sec_remaining.unwrap_or(0) <= 0 {
             if let Some(h) = pets
                 .habitats
@@ -428,7 +469,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
 
     // 5f. Pets: daily PvP if we have a clear advantage (my-habitat total level
     //     > opponent's level_total × 1.2).
-    if let Some(pets) = state.pets.as_ref() {
+    if let Some(pets) = pets_opt {
         if let Some(o) = pets.opponent.as_ref() {
             if o.next_free_battle_sec_remaining.unwrap_or(0) <= 0 {
                 if let Some(habitat) = o.habitat {
@@ -509,7 +550,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 6b. Personal demon portal (daily, unlocks at char lvl 99).
-    if let Some(p) = state.dungeons.portal.as_ref() {
+    if let Some(p) = portal_opt {
         if p.can_fight && p.enemy_hp_percentage > 0 {
             return Some(HeuristicPick {
                 action: Action::FightPortal,
