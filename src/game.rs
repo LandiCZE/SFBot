@@ -189,10 +189,30 @@ pub struct FortressSummary {
     pub experience_current: u64,
     pub experience_limit: u64,
     pub buildings: Vec<FortressBuildingBrief>,
+    pub units: Vec<FortressUnitBrief>,
     pub upgrade_in_progress: Option<FortressUpgradeInfo>,
+    pub attack_target_pid: Option<u32>,
     pub attack_target_present: bool,
+    pub attack_target_soldier_advice: Option<u16>,
     pub attack_reroll_free: bool,
     pub attack_reroll_silver_cost: u64,
+}
+
+#[derive(Serialize)]
+pub struct FortressUnitBrief {
+    pub name: &'static str, // "soldier" | "archer" | "magician"
+    pub level: u16,
+    pub count: u16,
+    pub in_training: u16,
+    pub training_finishes_in_sec: Option<i64>,
+    pub training_cost_wood: u64,
+    pub training_cost_stone: u64,
+    pub training_cost_silver: u64,
+    pub training_time_sec: u64,
+    pub upgrade_cost_wood: u64,
+    pub upgrade_cost_stone: u64,
+    pub upgrade_next_level: u64,
+    pub has_training_building: bool,
 }
 
 #[derive(Serialize)]
@@ -411,7 +431,7 @@ impl StateSummary {
             arcane: b.arcane,
             dismantle_left: b.dismantle_left,
         });
-        let fortress = gs.fortress.as_ref().map(|f| fortress_summary(f, ch.silver));
+        let fortress = gs.fortress.as_ref().map(|f| fortress_summary(f, ch.silver, gs));
         let shops = shops_summary(gs, main);
         let tasks = tasks_summary(gs);
         let mail = mail_summary(gs);
@@ -652,7 +672,11 @@ fn dungeons_summary(gs: &GameState, my_level: u16) -> DungeonsSummary {
     }
 }
 
-fn fortress_summary(f: &sf_api::gamestate::fortress::Fortress, silver: u64) -> FortressSummary {
+fn fortress_summary(
+    f: &sf_api::gamestate::fortress::Fortress,
+    silver: u64,
+    gs: &GameState,
+) -> FortressSummary {
     let wood = f.resources.get(FortressResourceType::Wood);
     let stone = f.resources.get(FortressResourceType::Stone);
     let exp = f.resources.get(FortressResourceType::Experience);
@@ -702,6 +726,46 @@ fn fortress_summary(f: &sf_api::gamestate::fortress::Fortress, silver: u64) -> F
         .map(|t| t <= Local::now())
         .unwrap_or(true);
 
+    let units: Vec<FortressUnitBrief> = [
+        FortressUnitType::Soldier,
+        FortressUnitType::Magician,
+        FortressUnitType::Archer,
+    ]
+    .iter()
+    .map(|&ut| {
+        let u = f.units.get(ut);
+        let training_building = fortress_unit_training_building(ut);
+        let has_building = f.buildings.get(training_building).level > 0;
+        let training_finishes_in_sec = u
+            .training
+            .finish
+            .map(|t| (t - Local::now()).num_seconds());
+        FortressUnitBrief {
+            name: fortress_unit_name(ut),
+            level: u.level,
+            count: u.count,
+            in_training: u.in_training,
+            training_finishes_in_sec,
+            training_cost_wood: u.training.cost.wood,
+            training_cost_stone: u.training.cost.stone,
+            training_cost_silver: u.training.cost.silver,
+            training_time_sec: u.training.cost.time.as_secs(),
+            upgrade_cost_wood: u.upgrade_cost.wood,
+            upgrade_cost_stone: u.upgrade_cost.stone,
+            upgrade_next_level: u.upgrade_next_lvl,
+            has_training_building: has_building,
+        }
+    })
+    .collect();
+
+    let attack_target_pid = f.attack_target;
+    let attack_target_soldier_advice = attack_target_pid.and_then(|pid| {
+        gs.lookup
+            .lookup_pid(pid)
+            .and_then(|op| op.fortress.as_ref())
+            .map(|of| of.soldier_advice)
+    });
+
     FortressSummary {
         honor: f.honor,
         wood_current: wood.current,
@@ -711,10 +775,38 @@ fn fortress_summary(f: &sf_api::gamestate::fortress::Fortress, silver: u64) -> F
         experience_current: exp.current,
         experience_limit: exp.limit,
         buildings,
+        units,
         upgrade_in_progress,
+        attack_target_pid,
         attack_target_present: f.attack_target.is_some(),
+        attack_target_soldier_advice,
         attack_reroll_free: reroll_free,
         attack_reroll_silver_cost: f.opponent_reroll_price,
+    }
+}
+
+pub fn fortress_unit_name(ut: FortressUnitType) -> &'static str {
+    match ut {
+        FortressUnitType::Soldier => "soldier",
+        FortressUnitType::Magician => "magician",
+        FortressUnitType::Archer => "archer",
+    }
+}
+
+pub fn fortress_unit_from_name(n: &str) -> Option<FortressUnitType> {
+    Some(match n {
+        "soldier" => FortressUnitType::Soldier,
+        "magician" => FortressUnitType::Magician,
+        "archer" => FortressUnitType::Archer,
+        _ => return None,
+    })
+}
+
+fn fortress_unit_training_building(ut: FortressUnitType) -> FortressBuildingType {
+    match ut {
+        FortressUnitType::Soldier => FortressBuildingType::Barracks,
+        FortressUnitType::Magician => FortressBuildingType::MagesTower,
+        FortressUnitType::Archer => FortressBuildingType::ArcheryGuild,
     }
 }
 

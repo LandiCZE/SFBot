@@ -6,6 +6,7 @@ use sf_api::gamestate::dungeons::Dungeon;
 use sf_api::gamestate::items::{ItemPosition, PlayerItemPosition};
 use sf_api::gamestate::tavern::ExpeditionStage;
 use sf_api::session::SimpleSession;
+use sf_api::gamestate::fortress::FortressUnitType;
 use std::collections::VecDeque;
 use std::env;
 use std::path::PathBuf;
@@ -117,6 +118,38 @@ async fn main() -> Result<()> {
                             tracing::info!(?target, "fortress build finished");
                         }
                     }
+                }
+            }
+        }
+
+        // Fortress attack-target autopilot: if we have a target but haven't
+        // seen their OtherFortress info yet, send ViewPlayer so strategy
+        // can read soldier_advice. One-shot per target.
+        let needs_view_target = {
+            let gs = session.game_state();
+            match gs {
+                Some(gs) => gs.fortress.as_ref().and_then(|f| {
+                    f.attack_target.filter(|pid| {
+                        gs.lookup
+                            .lookup_pid(*pid)
+                            .and_then(|op| op.fortress.as_ref())
+                            .is_none()
+                    })
+                }),
+                None => None,
+            }
+        };
+        if let Some(target_pid) = needs_view_target {
+            if !cfg.dry_run {
+                if let Err(e) = session
+                    .send_command(Command::ViewPlayer {
+                        ident: target_pid.to_string(),
+                    })
+                    .await
+                {
+                    tracing::debug!("ViewPlayer for fortress target failed: {e:#}");
+                } else {
+                    tracing::debug!(?target_pid, "fetched fortress target info");
                 }
             }
         }
@@ -661,6 +694,57 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
                 .send_command(Command::ClaimableClaim { msg_id: *msg_id })
                 .await?;
             Ok(format!("claimed pending mail {msg_id}"))
+        }
+        Action::FortressTrainUnit { unit, count } => {
+            let ut = game::fortress_unit_from_name(unit)
+                .ok_or_else(|| anyhow!("unknown unit {unit:?}"))?;
+            session
+                .send_command(Command::FortressBuildUnit {
+                    unit: ut,
+                    count: *count,
+                })
+                .await?;
+            Ok(format!("fortress: training {count} {unit}"))
+        }
+        Action::FortressUpgradeUnit { unit } => {
+            let ut = game::fortress_unit_from_name(unit)
+                .ok_or_else(|| anyhow!("unknown unit {unit:?}"))?;
+            session.send_command(Command::FortressUpgradeUnit { unit: ut }).await?;
+            Ok(format!("fortress: upgraded {unit}"))
+        }
+        Action::FortressAttack => {
+            let soldiers = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before FortressAttack"))?;
+                let f = gs
+                    .fortress
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("fortress not unlocked"))?;
+                sf_api::misc::EnumMapGet::get(&f.units, FortressUnitType::Soldier).count as u32
+            };
+            session
+                .send_command(Command::FortressAttack { soldiers })
+                .await?;
+            let outcome = session
+                .game_state()
+                .and_then(|gs| gs.last_fight.as_ref())
+                .map(|fight| {
+                    format!(
+                        "won={} honor_change={} silver_change={}",
+                        fight.has_player_won, fight.honor_change, fight.silver_change
+                    )
+                })
+                .unwrap_or_else(|| "no fight data".to_string());
+            Ok(format!("fortress attack with {soldiers} soldiers: {outcome}"))
+        }
+        Action::FortressRerollEnemy => {
+            session
+                .send_command(Command::FortressNewEnemy {
+                    use_mushroom: false,
+                })
+                .await?;
+            Ok("fortress: rerolled enemy".to_string())
         }
         Action::FortressGatherResource { resource } => {
             let r = game::fortress_resource_from_name(resource)

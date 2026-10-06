@@ -18,6 +18,10 @@ pub enum Action {
     FightDungeon,
     FortressUpgradeBuilding { building: String },
     FortressGatherResource { resource: String },
+    FortressTrainUnit { unit: String, count: u32 },
+    FortressUpgradeUnit { unit: String },
+    FortressAttack,
+    FortressRerollEnemy,
     BuyShopItem { shop: String, pos: u8 },
     ClaimTaskChest { track: String, pos: u8 },
     OpenMail { pos: u8 },
@@ -290,6 +294,104 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
         Action::ClaimPendingMail { msg_id } => {
             if !state.mail.claimables_pending.contains(msg_id) {
                 return Err(format!("no pending claimable with msg_id {msg_id}"));
+            }
+            Ok(())
+        }
+        Action::FortressTrainUnit { unit, count } => {
+            let f = state
+                .fortress
+                .as_ref()
+                .ok_or_else(|| "fortress not unlocked".to_string())?;
+            let u = f
+                .units
+                .iter()
+                .find(|u| u.name == unit.as_str())
+                .ok_or_else(|| format!("unknown unit {unit:?}"))?;
+            if !u.has_training_building {
+                return Err(format!("{unit}: training building not built"));
+            }
+            if u.training_finishes_in_sec.map(|s| s > 0).unwrap_or(false) {
+                return Err(format!("{unit}: training already in progress"));
+            }
+            if *count == 0 {
+                return Err("count must be >= 1".into());
+            }
+            let n = *count as u64;
+            let wood_need = u.training_cost_wood.saturating_mul(n);
+            let stone_need = u.training_cost_stone.saturating_mul(n);
+            let silver_need = u.training_cost_silver.saturating_mul(n);
+            if f.wood_current < wood_need
+                || f.stone_current < stone_need
+                || state.character.silver < silver_need
+            {
+                return Err(format!(
+                    "need wood {wood_need}, stone {stone_need}, silver {silver_need} — have wood {}, stone {}, silver {}",
+                    f.wood_current, f.stone_current, state.character.silver
+                ));
+            }
+            Ok(())
+        }
+        Action::FortressUpgradeUnit { unit } => {
+            let f = state
+                .fortress
+                .as_ref()
+                .ok_or_else(|| "fortress not unlocked".to_string())?;
+            let u = f
+                .units
+                .iter()
+                .find(|u| u.name == unit.as_str())
+                .ok_or_else(|| format!("unknown unit {unit:?}"))?;
+            if !u.has_training_building {
+                return Err(format!("{unit}: training building not built"));
+            }
+            if f.wood_current < u.upgrade_cost_wood || f.stone_current < u.upgrade_cost_stone {
+                return Err(format!(
+                    "unit upgrade needs wood {} stone {} — have wood {} stone {}",
+                    u.upgrade_cost_wood, u.upgrade_cost_stone, f.wood_current, f.stone_current
+                ));
+            }
+            Ok(())
+        }
+        Action::FortressAttack => {
+            let f = state
+                .fortress
+                .as_ref()
+                .ok_or_else(|| "fortress not unlocked".to_string())?;
+            if !f.attack_target_present {
+                return Err("no attack target assigned".into());
+            }
+            let advice = f
+                .attack_target_soldier_advice
+                .ok_or_else(|| "target soldier_advice not loaded yet".to_string())?;
+            let soldier = f
+                .units
+                .iter()
+                .find(|u| u.name == "soldier")
+                .ok_or_else(|| "no soldier unit".to_string())?;
+            if (soldier.count as u16) < advice.saturating_add(2) {
+                return Err(format!(
+                    "need {} soldiers (advice {} + 2 buffer), have {}",
+                    advice + 2,
+                    advice,
+                    soldier.count
+                ));
+            }
+            let archer = f.units.iter().find(|u| u.name == "archer");
+            let magician = f.units.iter().find(|u| u.name == "magician");
+            if archer.map(|u| u.count).unwrap_or(0) == 0
+                || magician.map(|u| u.count).unwrap_or(0) == 0
+            {
+                return Err("need at least 1 archer and 1 magician for support".into());
+            }
+            Ok(())
+        }
+        Action::FortressRerollEnemy => {
+            let f = state
+                .fortress
+                .as_ref()
+                .ok_or_else(|| "fortress not unlocked".to_string())?;
+            if !f.attack_reroll_free {
+                return Err("reroll is not free yet".into());
             }
             Ok(())
         }

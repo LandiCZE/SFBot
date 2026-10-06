@@ -224,6 +224,94 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         }
     }
 
+    // 5a. Fortress: train missing units when the training building exists,
+    //     slot is free, and we can afford at least a small batch.
+    if let Some(f) = state.fortress.as_ref() {
+        for u in f.units.iter() {
+            if !u.has_training_building {
+                continue;
+            }
+            if u.training_finishes_in_sec.map(|s| s > 0).unwrap_or(false) {
+                continue;
+            }
+            // Target a modest standing army; retrain in batches of 5.
+            let target = match u.name {
+                "soldier" => 25u16,
+                _ => 10u16,
+            };
+            if u.count >= target {
+                continue;
+            }
+            let wanted = (target - u.count).min(5) as u64;
+            let wood_need = u.training_cost_wood.saturating_mul(wanted);
+            let stone_need = u.training_cost_stone.saturating_mul(wanted);
+            let silver_need = u.training_cost_silver.saturating_mul(wanted);
+            if f.wood_current < wood_need
+                || f.stone_current < stone_need
+                || state.character.silver < silver_need
+            {
+                continue;
+            }
+            return Some(HeuristicPick {
+                action: Action::FortressTrainUnit {
+                    unit: u.name.into(),
+                    count: wanted as u32,
+                },
+                reason: "heuristic: top up fortress unit roster",
+            });
+        }
+    }
+
+    // 5b. Fortress: attack when we have a target and are strong enough.
+    if let Some(f) = state.fortress.as_ref() {
+        if f.attack_target_present
+            && f.attack_target_soldier_advice.is_some()
+            && !matches!(
+                (
+                    f.units.iter().find(|u| u.name == "soldier").map(|u| u.count),
+                    f.attack_target_soldier_advice,
+                ),
+                (Some(count), Some(advice)) if (count as u16) < advice.saturating_add(2)
+            )
+        {
+            let archers_ok = f
+                .units
+                .iter()
+                .find(|u| u.name == "archer")
+                .map(|u| u.count > 0)
+                .unwrap_or(false);
+            let magicians_ok = f
+                .units
+                .iter()
+                .find(|u| u.name == "magician")
+                .map(|u| u.count > 0)
+                .unwrap_or(false);
+            if archers_ok && magicians_ok {
+                return Some(HeuristicPick {
+                    action: Action::FortressAttack,
+                    reason: "heuristic: fortress target winnable (soldiers ≥ advice+2 + support)",
+                });
+            }
+        }
+    }
+
+    // 5c. Fortress: reroll a too-strong target when the reroll is free.
+    if let Some(f) = state.fortress.as_ref() {
+        if f.attack_target_present && f.attack_reroll_free {
+            if let (Some(advice), Some(count)) = (
+                f.attack_target_soldier_advice,
+                f.units.iter().find(|u| u.name == "soldier").map(|u| u.count),
+            ) {
+                if (count as u16) < advice.saturating_add(2) {
+                    return Some(HeuristicPick {
+                        action: Action::FortressRerollEnemy,
+                        reason: "heuristic: current fortress target too strong, free reroll",
+                    });
+                }
+            }
+        }
+    }
+
     // 6. Dungeons: free fight on a winnable target.
     if state.dungeons.off_cooldown && state.dungeons.best_winnable_name.is_some() {
         return Some(HeuristicPick {
