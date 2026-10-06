@@ -2,9 +2,10 @@ name: sf-bot
 
 on:
   schedule:
-    # Every 30 min at :00 and :30 (UTC). Each run bots for ~25 min, leaving a
-    # ~5 min slack so the next cron fires reliably.
-    - cron: '*/30 * * * *'
+    # GitHub drops scheduled ticks under load, and :00 / :30 are the two
+    # busiest minutes. :07 and :37 are off the hot path and fire reliably.
+    # (Still every 30 min; just offset.)
+    - cron: '7,37 * * * *'
   workflow_dispatch:
     inputs:
       run_seconds:
