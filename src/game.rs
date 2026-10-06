@@ -165,6 +165,26 @@ pub struct DungeonsSummary {
     pub available: Vec<DungeonBrief>,
     /// Best winnable target with (enemy_level + SAFE_MARGIN) <= my_level.
     pub best_winnable_name: Option<String>,
+    /// Tower is tracked separately — uses Command::FightTower, not FightDungeon.
+    pub tower: Option<TowerBrief>,
+    /// Personal demon portal (unlocks at char level 99).
+    pub portal: Option<PortalBrief>,
+}
+
+#[derive(Serialize)]
+pub struct TowerBrief {
+    pub current_floor: u16,
+    pub enemy_level: Option<u16>,
+    pub enemy_class: Option<String>,
+    pub winnable: bool,
+}
+
+#[derive(Serialize)]
+pub struct PortalBrief {
+    pub can_fight: bool,
+    pub finished: u16,
+    pub enemy_level: u32,
+    pub enemy_hp_percentage: u8,
 }
 
 #[derive(Serialize)]
@@ -758,10 +778,37 @@ fn dungeons_summary(gs: &GameState, my_level: u16) -> DungeonsSummary {
     };
 
     let mut available: Vec<DungeonBrief> = Vec::new();
+    let tower = {
+        let prog = gs.dungeons.light.get(LightDungeon::Tower);
+        match prog {
+            DungeonProgress::Open { finished } => {
+                let d = Dungeon::Light(LightDungeon::Tower);
+                let enemy = gs.dungeons.current_enemy(d);
+                let winnable = enemy
+                    .map(|m| m.level.saturating_add(DUNGEON_SAFE_MARGIN) <= my_level)
+                    .unwrap_or(false);
+                Some(TowerBrief {
+                    current_floor: *finished,
+                    enemy_level: enemy.map(|m| m.level),
+                    enemy_class: enemy.map(|m| format!("{:?}", m.class)),
+                    winnable,
+                })
+            }
+            _ => None,
+        }
+    };
+
+    let portal = gs.dungeons.portal.as_ref().map(|p| PortalBrief {
+        can_fight: p.can_fight,
+        finished: p.finished,
+        enemy_level: p.enemy_level,
+        enemy_hp_percentage: p.enemy_hp_percentage,
+    });
+
     for (dkey, prog) in gs.dungeons.light.iter() {
         if let DungeonProgress::Open { finished } = prog {
             if dkey == LightDungeon::Tower {
-                // Tower uses a separate command we don't implement yet.
+                // Tower is reported separately — see `tower` above.
                 continue;
             }
             let d = Dungeon::Light(dkey);
@@ -804,6 +851,8 @@ fn dungeons_summary(gs: &GameState, my_level: u16) -> DungeonsSummary {
         next_free_fight_sec_remaining: remaining,
         available,
         best_winnable_name,
+        tower,
+        portal,
     }
 }
 

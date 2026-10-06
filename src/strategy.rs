@@ -373,12 +373,34 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         }
     }
 
-    // 6. Dungeons: free fight on a winnable target.
+    // 6. Dungeons: free fight on a winnable target (regular dungeons).
     if state.dungeons.off_cooldown && state.dungeons.best_winnable_name.is_some() {
         return Some(HeuristicPick {
             action: Action::FightDungeon,
             reason: "heuristic: free dungeon fight on winnable target",
         });
+    }
+
+    // 6a. Tower (separate command, shares the dungeon cooldown).
+    if state.dungeons.off_cooldown {
+        if let Some(t) = state.dungeons.tower.as_ref() {
+            if t.winnable {
+                return Some(HeuristicPick {
+                    action: Action::FightTower,
+                    reason: "heuristic: tower floor winnable + dungeon cooldown free",
+                });
+            }
+        }
+    }
+
+    // 6b. Personal demon portal (daily, unlocks at char lvl 99).
+    if let Some(p) = state.dungeons.portal.as_ref() {
+        if p.can_fight && p.enemy_hp_percentage > 0 {
+            return Some(HeuristicPick {
+                action: Action::FightPortal,
+                reason: "heuristic: daily portal fight available",
+            });
+        }
     }
 
     // 7. Arena fight.

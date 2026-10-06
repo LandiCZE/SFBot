@@ -631,6 +631,32 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
                 .await?;
             Ok(format!("fought dungeon {dungeon_name}"))
         }
+        Action::FightTower => {
+            let current_level = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before FightTower"))?;
+                let prog = sf_api::misc::EnumMapGet::get(
+                    &gs.dungeons.light,
+                    sf_api::gamestate::dungeons::LightDungeon::Tower,
+                );
+                match prog {
+                    sf_api::gamestate::dungeons::DungeonProgress::Open { finished } => (finished + 1) as u8,
+                    _ => return Err(anyhow!("tower not open")),
+                }
+            };
+            session
+                .send_command(Command::FightTower {
+                    current_level,
+                    use_mush: false,
+                })
+                .await?;
+            Ok(format!("tower fight at floor {current_level}"))
+        }
+        Action::FightPortal => {
+            session.send_command(Command::FightPortal).await?;
+            Ok("portal fight".to_string())
+        }
         Action::FortressUpgradeBuilding { building } => {
             let f_type = game::fortress_building_from_name(building)
                 .ok_or_else(|| anyhow!("unknown building {building:?}"))?;

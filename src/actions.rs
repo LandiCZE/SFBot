@@ -16,6 +16,8 @@ pub enum Action {
     StartGuardWork { hours: u8 },
     FightArena,
     FightDungeon,
+    FightTower,
+    FightPortal,
     FortressUpgradeBuilding { building: String },
     FortressGatherResource { resource: String },
     FortressTrainUnit { unit: String, count: u32 },
@@ -219,6 +221,41 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
             }
             if state.dungeons.best_winnable_name.is_none() {
                 return Err("no winnable dungeon within safe-margin".into());
+            }
+            Ok(())
+        }
+        Action::FightTower => {
+            if !state.dungeons.off_cooldown {
+                return Err(format!(
+                    "dungeons on cooldown ({}s)",
+                    state.dungeons.next_free_fight_sec_remaining.unwrap_or_default()
+                ));
+            }
+            let t = state
+                .dungeons
+                .tower
+                .as_ref()
+                .ok_or_else(|| "tower not open".to_string())?;
+            if !t.winnable {
+                return Err(format!(
+                    "tower floor {} enemy too strong (level {:?})",
+                    t.current_floor + 1,
+                    t.enemy_level
+                ));
+            }
+            Ok(())
+        }
+        Action::FightPortal => {
+            let p = state
+                .dungeons
+                .portal
+                .as_ref()
+                .ok_or_else(|| "portal not visible (unlocks at char lvl 99)".to_string())?;
+            if !p.can_fight {
+                return Err("portal already fought today".into());
+            }
+            if p.enemy_hp_percentage == 0 {
+                return Err("portal enemy has 0 HP (nothing to fight)".into());
             }
             Ok(())
         }
