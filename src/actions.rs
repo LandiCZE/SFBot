@@ -18,6 +18,11 @@ pub enum Action {
     FightDungeon,
     FightTower,
     FightPortal,
+    HellevatorEnter,
+    HellevatorFight,
+    HellevatorClaimDaily,
+    HellevatorClaimDailyYesterday,
+    HellevatorClaimFinal,
     UnderworldUpgradeBuilding { building: String },
     UnderworldGatherResource { resource: String },
     UnderworldUpgradeUnit { unit: String },
@@ -224,6 +229,42 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
             }
             if state.dungeons.best_winnable_name.is_none() {
                 return Err("no winnable dungeon within safe-margin".into());
+            }
+            Ok(())
+        }
+        Action::HellevatorEnter => {
+            if state.hellevator.status != "not_entered" {
+                return Err(format!("hellevator status is {}", state.hellevator.status));
+            }
+            Ok(())
+        }
+        Action::HellevatorFight => {
+            if state.hellevator.status != "active" {
+                return Err(format!("hellevator status is {}", state.hellevator.status));
+            }
+            if state.hellevator.key_cards == 0 {
+                return Err("no key cards".into());
+            }
+            Ok(())
+        }
+        Action::HellevatorClaimDaily => {
+            if !state.hellevator.daily_claimable {
+                return Err("no daily hellevator reward to claim".into());
+            }
+            Ok(())
+        }
+        Action::HellevatorClaimDailyYesterday => {
+            if !state.hellevator.daily_yesterday_claimable {
+                return Err("no yesterday hellevator reward to claim".into());
+            }
+            Ok(())
+        }
+        Action::HellevatorClaimFinal => {
+            if state.hellevator.status != "reward_claimable" {
+                return Err(format!(
+                    "hellevator status is {}, not reward_claimable",
+                    state.hellevator.status
+                ));
             }
             Ok(())
         }

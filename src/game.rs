@@ -9,7 +9,8 @@ use sf_api::gamestate::items::{EquipmentSlot, Item, ItemType, PotionSize, Potion
 use sf_api::gamestate::social::ClaimableStatus;
 use sf_api::gamestate::tavern::{AvailableTasks, CurrentAction, ExpeditionStage};
 use sf_api::gamestate::underworld::{UnderworldBuildingType, UnderworldResourceType, UnderworldUnitType};
-use sf_api::gamestate::unlockables::{HabitatExploration, HabitatType};
+use sf_api::gamestate::unlockables::{HabitatExploration, HabitatType, HellevatorStatus};
+use sf_api::gamestate::legendary_dungeon::LegendaryDungeonStatus;
 use sf_api::misc::EnumMapGet;
 
 /// Daily per-pet fruit-feed cap in the official client (approximate).
@@ -28,8 +29,25 @@ pub struct StateSummary {
     pub mail: MailSummary,
     pub pets: Option<PetsSummary>,
     pub underworld: Option<UnderworldSummary>,
+    pub hellevator: HellevatorSummary,
+    pub legendary_dungeon: LegendaryDungeonSummary,
     pub equipment: Vec<EquippedSummary>,
     pub backpack: Vec<BackpackItemSummary>,
+}
+
+#[derive(Serialize)]
+pub struct HellevatorSummary {
+    pub status: &'static str, // "not_available" | "not_entered" | "active" | "reward_claimable"
+    pub key_cards: u32,
+    pub current_floor: u32,
+    pub points: u32,
+    pub daily_claimable: bool,
+    pub daily_yesterday_claimable: bool,
+}
+
+#[derive(Serialize)]
+pub struct LegendaryDungeonSummary {
+    pub status: &'static str,
 }
 
 #[derive(Serialize)]
@@ -546,6 +564,8 @@ impl StateSummary {
             .underworld
             .as_ref()
             .map(|uw| underworld_summary(uw, ch.silver));
+        let hellevator = hellevator_summary(gs);
+        let legendary_dungeon = legendary_summary(gs);
 
         let equipment: Vec<EquippedSummary> = ch
             .equipment
@@ -627,10 +647,56 @@ impl StateSummary {
             mail,
             pets,
             underworld,
+            hellevator,
+            legendary_dungeon,
             equipment,
             backpack,
         }
     }
+}
+
+fn hellevator_summary(gs: &GameState) -> HellevatorSummary {
+    let status = match gs.hellevator.status() {
+        HellevatorStatus::NotAvailable => "not_available",
+        HellevatorStatus::NotEntered => "not_entered",
+        HellevatorStatus::RewardClaimable => "reward_claimable",
+        HellevatorStatus::Active(_) => "active",
+    };
+    let (key_cards, current_floor, points, daily_claimable, daily_yesterday_claimable) =
+        if let HellevatorStatus::Active(h) = gs.hellevator.status() {
+            let dc = h.rewards_today.as_ref().map(|r| r.claimable()).unwrap_or(false);
+            let dyc = h
+                .rewards_yesterday
+                .as_ref()
+                .map(|r| r.claimable())
+                .unwrap_or(false);
+            (h.key_cards, h.current_floor, h.points, dc, dyc)
+        } else {
+            (0, 0, 0, false, false)
+        };
+    HellevatorSummary {
+        status,
+        key_cards,
+        current_floor,
+        points,
+        daily_claimable,
+        daily_yesterday_claimable,
+    }
+}
+
+fn legendary_summary(gs: &GameState) -> LegendaryDungeonSummary {
+    let status = match gs.legendary_dungeon.status() {
+        LegendaryDungeonStatus::Unavailable => "unavailable",
+        LegendaryDungeonStatus::NotEntered(_) => "not_entered",
+        LegendaryDungeonStatus::Ended(_) => "ended",
+        LegendaryDungeonStatus::DoorSelect { .. } => "door_select",
+        LegendaryDungeonStatus::PickGem { .. } => "pick_gem",
+        LegendaryDungeonStatus::Healing { .. } => "healing",
+        LegendaryDungeonStatus::Room { .. } => "room",
+        LegendaryDungeonStatus::TakeItem { .. } => "take_item",
+        LegendaryDungeonStatus::Unknown => "unknown",
+    };
+    LegendaryDungeonSummary { status }
 }
 
 fn underworld_summary(

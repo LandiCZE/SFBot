@@ -122,6 +122,56 @@ async fn main() -> Result<()> {
             }
         }
 
+        // Legendary dungeon autopilot: walk through the state machine. All
+        // decisions are "always first option" except Healing (don't touch —
+        // the server auto-charges mushrooms for a heal) and TakeItem (needs
+        // inventory logic we don't implement yet).
+        let legendary_action = {
+            use sf_api::gamestate::legendary_dungeon::{
+                LegendaryDungeonStatus, RoomEncounter, RoomStatus, RoomType,
+            };
+            let gs_opt = session.game_state();
+            gs_opt.and_then(|gs| match gs.legendary_dungeon.status() {
+                LegendaryDungeonStatus::Room {
+                    status: RoomStatus::Entered,
+                    encounter,
+                    typ,
+                    ..
+                } => match encounter {
+                    RoomEncounter::Monster(_) => Some(Command::LegendaryDungeonMonsterFight),
+                    _ if matches!(typ, RoomType::Generic | RoomType::Encounter) => {
+                        Some(Command::LegendaryDungeonEncounterInteract)
+                    }
+                    _ => Some(Command::LegendaryDungeonRoomInteract),
+                },
+                LegendaryDungeonStatus::Room {
+                    status: RoomStatus::Finished,
+                    ..
+                } => Some(Command::LegendaryDungeonForcedContinue),
+                LegendaryDungeonStatus::DoorSelect { doors, .. } => doors.first().map(|d| {
+                    Command::LegendaryDungeonPickDoor { pos: 0, typ: d.typ }
+                }),
+                LegendaryDungeonStatus::PickGem { available_gems, .. } => {
+                    available_gems.first().map(|g| Command::LegendaryDungeonPickGem {
+                        gem_type: g.typ,
+                    })
+                }
+                // Healing: do nothing. Any interact here could cost mushrooms.
+                LegendaryDungeonStatus::Healing { .. } => None,
+                // Everything else — not_entered/take_item/unknown/unavailable/ended — skip.
+                _ => None,
+            })
+        };
+        if let Some(cmd) = legendary_action {
+            if !cfg.dry_run {
+                if let Err(e) = session.send_command(cmd).await {
+                    tracing::debug!("legendary dungeon autopilot: {e:#}");
+                } else {
+                    tracing::info!("legendary dungeon: progressed one step");
+                }
+            }
+        }
+
         // Underworld autopilot: finish an upgrade whose timer has elapsed.
         if let Some(gs) = session.game_state() {
             if let Some(uw) = gs.underworld.as_ref() {
@@ -651,6 +701,32 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
                 })
                 .await?;
             Ok(format!("fought dungeon {dungeon_name}"))
+        }
+        Action::HellevatorEnter => {
+            session.send_command(Command::HellevatorEnter).await?;
+            Ok("entered hellevator".to_string())
+        }
+        Action::HellevatorFight => {
+            session
+                .send_command(Command::HellevatorFight {
+                    use_mushroom: false,
+                })
+                .await?;
+            Ok("hellevator fight".to_string())
+        }
+        Action::HellevatorClaimDaily => {
+            session.send_command(Command::HellevatorClaimDaily).await?;
+            Ok("claimed hellevator daily".to_string())
+        }
+        Action::HellevatorClaimDailyYesterday => {
+            session
+                .send_command(Command::HellevatorClaimDailyYesterday)
+                .await?;
+            Ok("claimed hellevator yesterday".to_string())
+        }
+        Action::HellevatorClaimFinal => {
+            session.send_command(Command::HellevatorClaimFinal).await?;
+            Ok("claimed hellevator final".to_string())
         }
         Action::UnderworldUpgradeBuilding { building } => {
             let bt = game::underworld_building_from_name(building)

@@ -426,6 +426,43 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         }
     }
 
+    // 6a2. Hellevator event handling (gated on status()).
+    match state.hellevator.status {
+        "reward_claimable" => {
+            return Some(HeuristicPick {
+                action: Action::HellevatorClaimFinal,
+                reason: "heuristic: hellevator event ended — claim final reward",
+            });
+        }
+        "not_entered" => {
+            return Some(HeuristicPick {
+                action: Action::HellevatorEnter,
+                reason: "heuristic: hellevator event live — enter",
+            });
+        }
+        "active" => {
+            if state.hellevator.daily_claimable {
+                return Some(HeuristicPick {
+                    action: Action::HellevatorClaimDaily,
+                    reason: "heuristic: hellevator daily reward claimable",
+                });
+            }
+            if state.hellevator.daily_yesterday_claimable {
+                return Some(HeuristicPick {
+                    action: Action::HellevatorClaimDailyYesterday,
+                    reason: "heuristic: hellevator yesterday reward claimable",
+                });
+            }
+            if state.hellevator.key_cards > 0 {
+                return Some(HeuristicPick {
+                    action: Action::HellevatorFight,
+                    reason: "heuristic: hellevator key card available — fight",
+                });
+            }
+        }
+        _ => {}
+    }
+
     // 6b. Personal demon portal (daily, unlocks at char lvl 99).
     if let Some(p) = state.dungeons.portal.as_ref() {
         if p.can_fight && p.enemy_hp_percentage > 0 {
