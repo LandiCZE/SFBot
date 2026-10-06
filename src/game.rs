@@ -8,6 +8,7 @@ use sf_api::gamestate::fortress::{FortressBuildingType, FortressResourceType, Fo
 use sf_api::gamestate::items::{EquipmentSlot, Item, ItemType, PotionSize, PotionType};
 use sf_api::gamestate::social::ClaimableStatus;
 use sf_api::gamestate::tavern::{AvailableTasks, CurrentAction, ExpeditionStage};
+use sf_api::gamestate::underworld::{UnderworldBuildingType, UnderworldResourceType, UnderworldUnitType};
 use sf_api::gamestate::unlockables::{HabitatExploration, HabitatType};
 use sf_api::misc::EnumMapGet;
 
@@ -26,8 +27,55 @@ pub struct StateSummary {
     pub tasks: TasksSummary,
     pub mail: MailSummary,
     pub pets: Option<PetsSummary>,
+    pub underworld: Option<UnderworldSummary>,
     pub equipment: Vec<EquippedSummary>,
     pub backpack: Vec<BackpackItemSummary>,
+}
+
+#[derive(Serialize)]
+pub struct UnderworldSummary {
+    pub souls_current: u64,
+    pub souls_limit: u64,
+    pub resources: Vec<UnderworldResourceBrief>,
+    pub buildings: Vec<UnderworldBuildingBrief>,
+    pub units: Vec<UnderworldUnitBrief>,
+    pub upgrade_in_progress: Option<UnderworldUpgradeInfo>,
+    pub lure_level: u16,
+    pub lured_today: u16,
+}
+
+#[derive(Serialize)]
+pub struct UnderworldResourceBrief {
+    pub name: &'static str,
+    pub current: u64,
+    pub limit: u64,
+    pub per_hour: u64,
+}
+
+#[derive(Serialize)]
+pub struct UnderworldBuildingBrief {
+    pub name: &'static str,
+    pub level: u8,
+    pub upgrade_cost_silver: u64,
+    pub upgrade_cost_souls: u64,
+    pub upgrade_time_sec: u64,
+    pub buildable_now: bool,
+}
+
+#[derive(Serialize)]
+pub struct UnderworldUnitBrief {
+    pub name: &'static str,
+    pub level: u16,
+    pub count: u16,
+    pub upgrade_cost_silver: u64,
+    pub upgrade_cost_souls: u64,
+    pub upgrade_next_level: u16,
+}
+
+#[derive(Serialize)]
+pub struct UnderworldUpgradeInfo {
+    pub target: String,
+    pub finishes_in_sec: i64,
 }
 
 #[derive(Serialize)]
@@ -494,6 +542,10 @@ impl StateSummary {
         let tasks = tasks_summary(gs);
         let mail = mail_summary(gs);
         let pets = gs.pets.as_ref().map(pets_summary);
+        let underworld = gs
+            .underworld
+            .as_ref()
+            .map(|uw| underworld_summary(uw, ch.silver));
 
         let equipment: Vec<EquippedSummary> = ch
             .equipment
@@ -574,10 +626,167 @@ impl StateSummary {
             tasks,
             mail,
             pets,
+            underworld,
             equipment,
             backpack,
         }
     }
+}
+
+fn underworld_summary(
+    uw: &sf_api::gamestate::underworld::Underworld,
+    silver: u64,
+) -> UnderworldSummary {
+    let buildings_order = [
+        UnderworldBuildingType::HeartOfDarkness,
+        UnderworldBuildingType::Gate,
+        UnderworldBuildingType::GoldPit,
+        UnderworldBuildingType::SoulExtractor,
+        UnderworldBuildingType::GoblinPit,
+        UnderworldBuildingType::TortureChamber,
+        UnderworldBuildingType::GladiatorTrainer,
+        UnderworldBuildingType::TrollBlock,
+        UnderworldBuildingType::Adventuromatic,
+        UnderworldBuildingType::Keeper,
+    ];
+    let no_upgrade_in_progress = uw.upgrade_building.is_none();
+    let buildings: Vec<UnderworldBuildingBrief> = buildings_order
+        .iter()
+        .map(|&bt| {
+            let b = uw.buildings.get(bt);
+            let affordable =
+                b.upgrade_cost.silver <= silver && b.upgrade_cost.souls <= uw.souls_current;
+            UnderworldBuildingBrief {
+                name: underworld_building_name(bt),
+                level: b.level,
+                upgrade_cost_silver: b.upgrade_cost.silver,
+                upgrade_cost_souls: b.upgrade_cost.souls,
+                upgrade_time_sec: b.upgrade_cost.time.as_secs(),
+                buildable_now: no_upgrade_in_progress && affordable,
+            }
+        })
+        .collect();
+
+    let units: Vec<UnderworldUnitBrief> = [
+        UnderworldUnitType::Goblin,
+        UnderworldUnitType::Troll,
+        UnderworldUnitType::Keeper,
+    ]
+    .iter()
+    .map(|&ut| {
+        let u = uw.units.get(ut);
+        UnderworldUnitBrief {
+            name: underworld_unit_name(ut),
+            level: u.level,
+            count: u.count,
+            upgrade_cost_silver: u.upgrade_cost.silver,
+            upgrade_cost_souls: u.upgrade_cost.souls,
+            upgrade_next_level: u.upgrade_next_lvl,
+        }
+    })
+    .collect();
+
+    let resources_order = [
+        UnderworldResourceType::Souls,
+        UnderworldResourceType::Silver,
+        UnderworldResourceType::ThirstForAdventure,
+    ];
+    let resources: Vec<UnderworldResourceBrief> = resources_order
+        .iter()
+        .map(|&rt| {
+            let p = uw.production.get(rt);
+            UnderworldResourceBrief {
+                name: underworld_resource_name(rt),
+                current: p.last_collectable,
+                limit: p.limit,
+                per_hour: p.per_hour,
+            }
+        })
+        .collect();
+
+    let upgrade_in_progress = uw.upgrade_building.map(|target| UnderworldUpgradeInfo {
+        target: underworld_building_name(target).to_string(),
+        finishes_in_sec: uw
+            .upgrade_finish
+            .map(|t| (t - Local::now()).num_seconds())
+            .unwrap_or(0),
+    });
+
+    UnderworldSummary {
+        souls_current: uw.souls_current,
+        souls_limit: uw.souls_limit,
+        resources,
+        buildings,
+        units,
+        upgrade_in_progress,
+        lure_level: uw.lure_level,
+        lured_today: uw.lured_today,
+    }
+}
+
+pub fn underworld_building_name(bt: UnderworldBuildingType) -> &'static str {
+    match bt {
+        UnderworldBuildingType::HeartOfDarkness => "heart_of_darkness",
+        UnderworldBuildingType::Gate => "gate",
+        UnderworldBuildingType::GoldPit => "gold_pit",
+        UnderworldBuildingType::SoulExtractor => "soul_extractor",
+        UnderworldBuildingType::GoblinPit => "goblin_pit",
+        UnderworldBuildingType::TortureChamber => "torture_chamber",
+        UnderworldBuildingType::GladiatorTrainer => "gladiator_trainer",
+        UnderworldBuildingType::TrollBlock => "troll_block",
+        UnderworldBuildingType::Adventuromatic => "adventuromatic",
+        UnderworldBuildingType::Keeper => "keeper",
+    }
+}
+
+pub fn underworld_building_from_name(n: &str) -> Option<UnderworldBuildingType> {
+    Some(match n {
+        "heart_of_darkness" => UnderworldBuildingType::HeartOfDarkness,
+        "gate" => UnderworldBuildingType::Gate,
+        "gold_pit" => UnderworldBuildingType::GoldPit,
+        "soul_extractor" => UnderworldBuildingType::SoulExtractor,
+        "goblin_pit" => UnderworldBuildingType::GoblinPit,
+        "torture_chamber" => UnderworldBuildingType::TortureChamber,
+        "gladiator_trainer" => UnderworldBuildingType::GladiatorTrainer,
+        "troll_block" => UnderworldBuildingType::TrollBlock,
+        "adventuromatic" => UnderworldBuildingType::Adventuromatic,
+        "keeper" => UnderworldBuildingType::Keeper,
+        _ => return None,
+    })
+}
+
+pub fn underworld_unit_name(ut: UnderworldUnitType) -> &'static str {
+    match ut {
+        UnderworldUnitType::Goblin => "goblin",
+        UnderworldUnitType::Troll => "troll",
+        UnderworldUnitType::Keeper => "keeper",
+    }
+}
+
+pub fn underworld_unit_from_name(n: &str) -> Option<UnderworldUnitType> {
+    Some(match n {
+        "goblin" => UnderworldUnitType::Goblin,
+        "troll" => UnderworldUnitType::Troll,
+        "keeper" => UnderworldUnitType::Keeper,
+        _ => return None,
+    })
+}
+
+pub fn underworld_resource_name(rt: UnderworldResourceType) -> &'static str {
+    match rt {
+        UnderworldResourceType::Souls => "souls",
+        UnderworldResourceType::Silver => "silver",
+        UnderworldResourceType::ThirstForAdventure => "thirst_for_adventure",
+    }
+}
+
+pub fn underworld_resource_from_name(n: &str) -> Option<UnderworldResourceType> {
+    Some(match n {
+        "souls" => UnderworldResourceType::Souls,
+        "silver" => UnderworldResourceType::Silver,
+        "thirst_for_adventure" => UnderworldResourceType::ThirstForAdventure,
+        _ => return None,
+    })
 }
 
 fn pets_summary(p: &sf_api::gamestate::unlockables::Pets) -> PetsSummary {

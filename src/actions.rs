@@ -18,6 +18,9 @@ pub enum Action {
     FightDungeon,
     FightTower,
     FightPortal,
+    UnderworldUpgradeBuilding { building: String },
+    UnderworldGatherResource { resource: String },
+    UnderworldUpgradeUnit { unit: String },
     FortressUpgradeBuilding { building: String },
     FortressGatherResource { resource: String },
     FortressTrainUnit { unit: String, count: u32 },
@@ -221,6 +224,69 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
             }
             if state.dungeons.best_winnable_name.is_none() {
                 return Err("no winnable dungeon within safe-margin".into());
+            }
+            Ok(())
+        }
+        Action::UnderworldUpgradeBuilding { building } => {
+            let uw = state
+                .underworld
+                .as_ref()
+                .ok_or_else(|| "underworld not unlocked".to_string())?;
+            if uw.upgrade_in_progress.is_some() {
+                return Err("another underworld upgrade is already in progress".into());
+            }
+            let b = uw
+                .buildings
+                .iter()
+                .find(|b| b.name == building.as_str())
+                .ok_or_else(|| format!("unknown building {building:?}"))?;
+            if !b.buildable_now {
+                return Err(format!(
+                    "{building} not buildable now (silver={} souls={})",
+                    b.upgrade_cost_silver, b.upgrade_cost_souls
+                ));
+            }
+            Ok(())
+        }
+        Action::UnderworldGatherResource { resource } => {
+            let uw = state
+                .underworld
+                .as_ref()
+                .ok_or_else(|| "underworld not unlocked".to_string())?;
+            let r = uw
+                .resources
+                .iter()
+                .find(|r| r.name == resource.as_str())
+                .ok_or_else(|| format!("unknown underworld resource {resource:?}"))?;
+            if r.current == 0 {
+                return Err(format!("no {resource} to gather"));
+            }
+            Ok(())
+        }
+        Action::UnderworldUpgradeUnit { unit } => {
+            let uw = state
+                .underworld
+                .as_ref()
+                .ok_or_else(|| "underworld not unlocked".to_string())?;
+            let u = uw
+                .units
+                .iter()
+                .find(|u| u.name == unit.as_str())
+                .ok_or_else(|| format!("unknown unit {unit:?}"))?;
+            if u.upgrade_cost_silver == 0 && u.upgrade_cost_souls == 0 {
+                return Err(format!("{unit}: no upgrade cost known (maxed?)"));
+            }
+            if state.character.silver < u.upgrade_cost_silver {
+                return Err(format!(
+                    "need {} silver, have {}",
+                    u.upgrade_cost_silver, state.character.silver
+                ));
+            }
+            if uw.souls_current < u.upgrade_cost_souls {
+                return Err(format!(
+                    "need {} souls, have {}",
+                    u.upgrade_cost_souls, uw.souls_current
+                ));
             }
             Ok(())
         }

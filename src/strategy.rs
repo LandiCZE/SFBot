@@ -295,6 +295,39 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         }
     }
 
+    // 5b2. Underworld: gather any resource near its cap.
+    if let Some(uw) = state.underworld.as_ref() {
+        for r in uw.resources.iter() {
+            if r.limit > 0 && r.current * 10 >= r.limit * 9 {
+                return Some(HeuristicPick {
+                    action: Action::UnderworldGatherResource {
+                        resource: r.name.into(),
+                    },
+                    reason: "heuristic: underworld resource ≥ 90% full — gather",
+                });
+            }
+        }
+    }
+
+    // 5b3. Underworld: upgrade cheapest buildable when idle.
+    if let Some(uw) = state.underworld.as_ref() {
+        if uw.upgrade_in_progress.is_none() {
+            if let Some(b) = uw
+                .buildings
+                .iter()
+                .filter(|b| b.buildable_now)
+                .min_by_key(|b| b.upgrade_cost_silver + b.upgrade_cost_souls * 10)
+            {
+                return Some(HeuristicPick {
+                    action: Action::UnderworldUpgradeBuilding {
+                        building: b.name.into(),
+                    },
+                    reason: "heuristic: underworld idle — upgrade cheapest buildable",
+                });
+            }
+        }
+    }
+
     // 5c. Fortress: reroll a too-strong target when the reroll is free.
     if let Some(f) = state.fortress.as_ref() {
         if f.attack_target_present && f.attack_reroll_free {

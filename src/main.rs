@@ -122,6 +122,27 @@ async fn main() -> Result<()> {
             }
         }
 
+        // Underworld autopilot: finish an upgrade whose timer has elapsed.
+        if let Some(gs) = session.game_state() {
+            if let Some(uw) = gs.underworld.as_ref() {
+                if let (Some(target), Some(finish)) = (uw.upgrade_building, uw.upgrade_finish) {
+                    if finish <= chrono::Local::now() && !cfg.dry_run {
+                        if let Err(e) = session
+                            .send_command(Command::UnderworldUpgradeFinish {
+                                building: target,
+                                mushrooms: 0,
+                            })
+                            .await
+                        {
+                            tracing::warn!("UnderworldUpgradeFinish failed: {e:#}");
+                        } else {
+                            tracing::info!(?target, "underworld build finished");
+                        }
+                    }
+                }
+            }
+        }
+
         // Fortress attack-target autopilot: if we have a target but haven't
         // seen their OtherFortress info yet, send ViewPlayer so strategy
         // can read soldier_advice. One-shot per target.
@@ -630,6 +651,31 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
                 })
                 .await?;
             Ok(format!("fought dungeon {dungeon_name}"))
+        }
+        Action::UnderworldUpgradeBuilding { building } => {
+            let bt = game::underworld_building_from_name(building)
+                .ok_or_else(|| anyhow!("unknown underworld building {building:?}"))?;
+            session
+                .send_command(Command::UnderworldUpgradeStart {
+                    building: bt,
+                    mushrooms: 0,
+                })
+                .await?;
+            Ok(format!("underworld: started upgrade of {building}"))
+        }
+        Action::UnderworldGatherResource { resource } => {
+            let rt = game::underworld_resource_from_name(resource)
+                .ok_or_else(|| anyhow!("unknown underworld resource {resource:?}"))?;
+            session
+                .send_command(Command::UnderworldCollect { resource: rt })
+                .await?;
+            Ok(format!("underworld: collected {resource}"))
+        }
+        Action::UnderworldUpgradeUnit { unit } => {
+            let ut = game::underworld_unit_from_name(unit)
+                .ok_or_else(|| anyhow!("unknown underworld unit {unit:?}"))?;
+            session.send_command(Command::UnderworldUnitUpgrade { unit: ut }).await?;
+            Ok(format!("underworld: upgraded {unit}"))
         }
         Action::FightTower => {
             let current_level = {
