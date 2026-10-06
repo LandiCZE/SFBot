@@ -4,6 +4,20 @@
 use crate::actions::{Action, Attr};
 use crate::game::StateSummary;
 
+/// Runtime caps on features that the server has already told us are "not
+/// available" (even though sf-api surfaces stub state). Main loop sets these
+/// based on exec_error patterns and resets at session start.
+#[derive(Default, Clone, Debug)]
+pub struct RuntimeCaps {
+    pub blacksmith_disabled: bool,
+    pub toilet_disabled: bool,
+    pub fortress_disabled: bool,
+    pub underworld_disabled: bool,
+    pub witch_disabled: bool,
+    pub pets_disabled: bool,
+    pub portal_disabled: bool,
+}
+
 /// Minimum free backpack slots required before starting an expedition.
 /// Expeditions can drop up to ~4 items (encounter targets + boss drops);
 /// 3 free slots leaves comfortable headroom.
@@ -25,24 +39,41 @@ const UNLOCK_PETS: u16 = 55;
 const UNLOCK_WITCH: u16 = 66;
 const UNLOCK_PORTAL: u16 = 99;
 
-pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
+pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
     let idle = state.tavern.current_action == "idle"
         || (state.tavern.current_action == "expedition"
             && state.tavern.active_expedition.is_none());
 
-    // Mask each unlockable Option by the character's level. Use these shadows
-    // in place of `state.X.as_ref()` throughout the function.
+    // Mask each unlockable Option by (character level) AND (not disabled by
+    // a prior server rejection). Use these shadows in place of
+    // `state.X.as_ref()` throughout the function.
     let lvl = state.character.level;
-    let witch_opt = state.witch.as_ref().filter(|_| lvl >= UNLOCK_WITCH);
-    let toilet_opt = state.toilet.as_ref().filter(|_| lvl >= UNLOCK_TOILET);
-    let fortress_opt = state.fortress.as_ref().filter(|_| lvl >= UNLOCK_FORTRESS);
-    let underworld_opt = state.underworld.as_ref().filter(|_| lvl >= UNLOCK_UNDERWORLD);
-    let pets_opt = state.pets.as_ref().filter(|_| lvl >= UNLOCK_PETS);
+    let blacksmith_enabled = lvl >= UNLOCK_BLACKSMITH && !caps.blacksmith_disabled;
+    let witch_opt = state
+        .witch
+        .as_ref()
+        .filter(|_| lvl >= UNLOCK_WITCH && !caps.witch_disabled);
+    let toilet_opt = state
+        .toilet
+        .as_ref()
+        .filter(|_| lvl >= UNLOCK_TOILET && !caps.toilet_disabled);
+    let fortress_opt = state
+        .fortress
+        .as_ref()
+        .filter(|_| lvl >= UNLOCK_FORTRESS && !caps.fortress_disabled);
+    let underworld_opt = state
+        .underworld
+        .as_ref()
+        .filter(|_| lvl >= UNLOCK_UNDERWORLD && !caps.underworld_disabled);
+    let pets_opt = state
+        .pets
+        .as_ref()
+        .filter(|_| lvl >= UNLOCK_PETS && !caps.pets_disabled);
     let portal_opt = state
         .dungeons
         .portal
         .as_ref()
-        .filter(|_| lvl >= UNLOCK_PORTAL);
+        .filter(|_| lvl >= UNLOCK_PORTAL && !caps.portal_disabled);
 
     // 0. Equip clear upgrade — do this first so the stat boost applies to
     //    the very next fight. (Equipping is a swap, so it doesn't free a
@@ -60,8 +91,8 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
     }
 
     // 0b. Blacksmith: upgrade cheapest affordable equipped item (prefers epics).
-    //     Gated on Blacksmith unlock level.
-    if lvl >= UNLOCK_BLACKSMITH {
+    //     Gated on Blacksmith unlock level + runtime cap.
+    if blacksmith_enabled {
         if let Some(u) = state
             .upgradable_equipped
             .iter()
@@ -159,7 +190,7 @@ pub fn pick(state: &StateSummary) -> Option<HeuristicPick> {
         .filter(|b| b.is_junk)
         .max_by_key(|b| b.sell_price_silver)
     {
-        let blacksmith_usable = lvl >= UNLOCK_BLACKSMITH
+        let blacksmith_usable = blacksmith_enabled
             && state
                 .blacksmith
                 .as_ref()

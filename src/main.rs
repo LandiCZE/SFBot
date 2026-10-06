@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
     let mut recent: VecDeque<log::DecisionLog> = VecDeque::with_capacity(6);
     let mut last_claude_at: Option<Instant> = None;
     let mut last_dungeon_refresh: Option<Instant> = None;
+    let mut caps = strategy::RuntimeCaps::default();
     let started_at = Instant::now();
 
     tracing::info!(
@@ -286,7 +287,7 @@ async fn main() -> Result<()> {
         }
 
         // Heuristic first — covers the mechanical cases cheaply.
-        let decision = if let Some(h) = strategy::pick(&state) {
+        let decision = if let Some(h) = strategy::pick(&state, &caps) {
             tracing::info!(
                 reason = h.reason,
                 "strategy picked action without calling Claude"
@@ -348,7 +349,59 @@ async fn main() -> Result<()> {
                 } else {
                     match execute(&mut session, &decision.action).await {
                         Ok(msg) => (None, msg, true),
-                        Err(e) => (None, format!("exec_error: {e}"), false),
+                        Err(e) => {
+                            // Translate "feature not available" server rejections into
+                            // a session-scoped cap so we stop picking the same action.
+                            let msg = format!("{e}");
+                            let m = msg.to_lowercase();
+                            let feature_err = m.contains("not available")
+                                || m.contains("not unlocked")
+                                || m.contains("not open");
+                            if feature_err {
+                                use actions::Action::*;
+                                match &decision.action {
+                                    DismantleItem { .. } | BlacksmithUpgradeEquipped { .. } => {
+                                        caps.blacksmith_disabled = true;
+                                        tracing::warn!("disabling blacksmith for this session");
+                                    }
+                                    ToiletOpen | ToiletDropItem { .. } | ToiletFlush => {
+                                        caps.toilet_disabled = true;
+                                        tracing::warn!("disabling toilet for this session");
+                                    }
+                                    WitchDropItem { .. } => {
+                                        caps.witch_disabled = true;
+                                        tracing::warn!("disabling witch for this session");
+                                    }
+                                    FortressUpgradeBuilding { .. }
+                                    | FortressGatherResource { .. }
+                                    | FortressTrainUnit { .. }
+                                    | FortressUpgradeUnit { .. }
+                                    | FortressAttack
+                                    | FortressRerollEnemy => {
+                                        caps.fortress_disabled = true;
+                                        tracing::warn!("disabling fortress for this session");
+                                    }
+                                    UnderworldUpgradeBuilding { .. }
+                                    | UnderworldGatherResource { .. }
+                                    | UnderworldUpgradeUnit { .. } => {
+                                        caps.underworld_disabled = true;
+                                        tracing::warn!("disabling underworld for this session");
+                                    }
+                                    FeedPet { .. }
+                                    | FightPetHabitat { .. }
+                                    | FightPetOpponent { .. } => {
+                                        caps.pets_disabled = true;
+                                        tracing::warn!("disabling pets for this session");
+                                    }
+                                    FightPortal => {
+                                        caps.portal_disabled = true;
+                                        tracing::warn!("disabling portal for this session");
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            (None, format!("exec_error: {e}"), false)
+                        }
                     }
                 }
             }
