@@ -144,16 +144,9 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
                 Attr::Constitution => &state.character.attributes.constitution,
                 Attr::Luck => &state.character.attributes.luck,
             };
-            let class_mult = match attribute {
-                Attr::Luck => 5u64,
-                a if attr_matches_main_or_con(*a, state.character.main_attribute) => 1,
-                _ => 2,
-            };
-            let level = state.character.level as u64;
             let mut total: u64 = 0;
-            for i in 0..*points as u64 {
-                let n = stat.times_bought as u64 + i;
-                total = total.saturating_add((n * n * n * class_mult + 25) * level);
+            for i in 0..*points {
+                total = total.saturating_add(crate::game::next_point_cost(stat.times_bought + i));
             }
             if state.character.silver < total {
                 return Err(format!(
@@ -714,18 +707,6 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
         }
         Action::Wait => Ok(()),
     }
-}
-
-fn attr_matches_main_or_con(a: Attr, main: &str) -> bool {
-    if matches!(a, Attr::Constitution) {
-        return true;
-    }
-    matches!(
-        (a, main),
-        (Attr::Strength, "strength")
-            | (Attr::Dexterity, "dexterity")
-            | (Attr::Intelligence, "intelligence")
-    )
 }
 
 fn backpack_item(

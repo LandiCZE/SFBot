@@ -2,7 +2,7 @@ use chrono::Local;
 use serde::Serialize;
 use sf_api::command::{AttributeType, ExpeditionSetting, ShopType};
 use sf_api::gamestate::GameState;
-use sf_api::gamestate::character::{Character, Class};
+use sf_api::gamestate::character::Character;
 use sf_api::gamestate::dungeons::{Dungeon, DungeonProgress, LightDungeon, ShadowDungeon};
 use sf_api::gamestate::fortress::{FortressBuildingType, FortressResourceType, FortressUnitType};
 use sf_api::gamestate::items::{EquipmentSlot, Item, ItemType, PotionSize, PotionType};
@@ -1419,7 +1419,7 @@ fn item_main_stat_score(item: &Item, main: AttributeType) -> u32 {
 /// Does NOT depend on character level, class, or attribute kind.
 ///
 /// Reference: https://github.com/HafisCZ/sf-tools (js/playa/calculations.js).
-pub fn next_point_cost(_class: Class, _attribute: AttributeType, times_bought: u32, _level: u16) -> u64 {
+pub fn next_point_cost(times_bought: u32) -> u64 {
     let curve = gold_curve();
     let mut sum: u64 = 0;
     for i in 0..5u32 {
@@ -1473,7 +1473,7 @@ fn attr_stat(ch: &Character, a: AttributeType) -> AttributeStat {
         base: *ch.attribute_basis.get(a),
         additions: *ch.attribute_additions.get(a),
         times_bought,
-        next_point_cost_silver: next_point_cost(ch.class, a, times_bought, ch.level),
+        next_point_cost_silver: next_point_cost(times_bought),
     }
 }
 
