@@ -1413,20 +1413,48 @@ fn item_main_stat_score(item: &Item, main: AttributeType) -> u32 {
     base + weapon_bonus
 }
 
-pub fn next_point_cost(class: Class, attribute: AttributeType, times_bought: u32, level: u16) -> u64 {
-    let mult = attribute_cost_multiplier(class, attribute);
-    let n = times_bought as u64;
-    (n * n * n * mult + 25) * level as u64
+/// Silver cost of buying the next attribute point, given how many have
+/// already been bought for that attribute. Ported from HafisCZ sf-tools
+/// `Calculations.goldAttributeCost` — the canonical community implementation.
+/// Does NOT depend on character level, class, or attribute kind.
+///
+/// Reference: https://github.com/HafisCZ/sf-tools (js/playa/calculations.js).
+pub fn next_point_cost(_class: Class, _attribute: AttributeType, times_bought: u32, _level: u16) -> u64 {
+    let curve = gold_curve();
+    let mut sum: u64 = 0;
+    for i in 0..5u32 {
+        let num = (1 + (times_bought + i) / 5) as usize;
+        if num >= 800 {
+            // sf-tools caps individual terms at 5e9 gold; cap total at 10M gold = 1B silver.
+            return 1_000_000_000;
+        }
+        sum += curve[num];
+    }
+    // sf-tools: gold_cost = 5 * floor(floor(sum/5)/5) / 100, capped at 10M gold.
+    // In silver (= gold × 100): silver_cost = 5 * floor(floor(sum/5)/5), cap 1E9.
+    let silver = 5 * ((sum / 5) / 5);
+    silver.min(1_000_000_000)
 }
 
-fn attribute_cost_multiplier(class: Class, attribute: AttributeType) -> u64 {
-    let main = class.main_attribute();
-    match attribute {
-        a if a == main => 1,
-        AttributeType::Constitution => 1,
-        AttributeType::Luck => 5,
-        _ => 2,
-    }
+/// Precomputed gold curve indexed by "level number" used inside the
+/// attribute-cost loop. Matches sf-tools' `GOLD_CURVE` exactly.
+fn gold_curve() -> &'static [u64; 650] {
+    use std::sync::OnceLock;
+    static CURVE: OnceLock<[u64; 650]> = OnceLock::new();
+    CURVE.get_or_init(|| {
+        let mut a = [0u64; 650];
+        a[1] = 25;
+        a[2] = 50;
+        a[3] = 75;
+        for i in 4..650 {
+            let prev = a[i - 1];
+            let half = a[i / 2] / 3;
+            let third = a[i / 3] / 4;
+            let v = ((prev + half + third) / 5) * 5;
+            a[i] = v.min(1_000_000_000);
+        }
+        a
+    })
 }
 
 fn attr_name(a: AttributeType) -> &'static str {
