@@ -246,45 +246,42 @@ async fn main() -> Result<()> {
             game::StateSummary::from_game_state(gs)
         };
 
-        if let Some(rem_sec) = state.tavern.busy_until_sec_remaining {
-            if rem_sec > 0 {
-                let jitter = { rand::rng().random_range(5..=40) };
-                let wait = rem_sec as u64 + jitter;
-                tracing::info!(
-                    current = %state.tavern.current_action,
-                    rem_sec,
-                    jitter,
-                    "busy — sleeping"
-                );
-                sleep_bounded(Duration::from_secs(wait), run_deadline).await;
-                continue;
-            }
-            if state.tavern.current_action.starts_with("quest") {
-                if cfg.dry_run {
-                    tracing::info!("[dry-run] would FinishQuest");
-                } else if let Err(e) = session
-                    .send_command(Command::FinishQuest { skip: None })
-                    .await
-                {
-                    tracing::warn!("FinishQuest failed: {e:#}");
-                    sleep(Duration::from_secs(10)).await;
-                } else {
-                    tracing::info!("collected quest reward");
+        // Reward collection: if the busy timer has elapsed, collect first.
+        // Then fall through so strategy can run this cycle.
+        let busy_rem_sec = state.tavern.busy_until_sec_remaining;
+        if let Some(rem_sec) = busy_rem_sec {
+            if rem_sec <= 0 {
+                if state.tavern.current_action.starts_with("quest") {
+                    if cfg.dry_run {
+                        tracing::info!("[dry-run] would FinishQuest");
+                    } else if let Err(e) = session
+                        .send_command(Command::FinishQuest { skip: None })
+                        .await
+                    {
+                        tracing::warn!("FinishQuest failed: {e:#}");
+                        sleep(Duration::from_secs(10)).await;
+                    } else {
+                        tracing::info!("collected quest reward");
+                    }
+                    continue;
                 }
-                continue;
-            }
-            if state.tavern.current_action.starts_with("city_guard") {
-                if cfg.dry_run {
-                    tracing::info!("[dry-run] would FinishWork");
-                } else if let Err(e) = session.send_command(Command::FinishWork).await {
-                    tracing::warn!("FinishWork failed: {e:#}");
-                    sleep(Duration::from_secs(10)).await;
-                } else {
-                    tracing::info!("collected guard pay");
+                if state.tavern.current_action.starts_with("city_guard") {
+                    if cfg.dry_run {
+                        tracing::info!("[dry-run] would FinishWork");
+                    } else if let Err(e) = session.send_command(Command::FinishWork).await {
+                        tracing::warn!("FinishWork failed: {e:#}");
+                        sleep(Duration::from_secs(10)).await;
+                    } else {
+                        tracing::info!("collected guard pay");
+                    }
+                    continue;
                 }
-                continue;
             }
         }
+        // If still busy, we DON'T return early — strategy can still fire
+        // inventory/attribute/sell actions during a long guard shift. Just
+        // cap the per-cycle sleep at ~60s so attribute buys and the like
+        // get a chance each minute. See the sleep step at the bottom.
 
         // Heuristic first — covers the mechanical cases cheaply.
         let decision = if let Some(h) = strategy::pick(&state, &caps) {
@@ -417,8 +414,18 @@ async fn main() -> Result<()> {
             executed,
         )?;
 
+        // Sleep: standard 2–6s jitter when idle; during a busy timer (quest or
+        // guard), cap at ~60s + jitter so inventory/attribute actions can
+        // still fire every minute instead of waiting out a 10-hour guard shift.
+        let base_sleep = match busy_rem_sec {
+            Some(rem) if rem > 0 => {
+                let cap_sec = 60u64;
+                Duration::from_secs((rem as u64).min(cap_sec))
+            }
+            _ => Duration::from_millis(0),
+        };
         let jitter_ms = { rand::rng().random_range(2000..=6000) };
-        sleep_bounded(Duration::from_millis(jitter_ms), run_deadline).await;
+        sleep_bounded(base_sleep + Duration::from_millis(jitter_ms), run_deadline).await;
     }
 
     tracing::info!("core loop finished");
