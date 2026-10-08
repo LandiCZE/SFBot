@@ -1,5 +1,6 @@
-//! Pure heuristic action picker. Covers the mechanical cases so Claude only
-//! sees genuine tradeoffs. If this returns None, the main loop asks Claude.
+//! Pure heuristic action picker. Returns `None` when there's nothing useful to
+//! do (busy timer, or genuinely idle with no eligible action) — the main loop
+//! treats that as a wait.
 
 use crate::actions::{Action, Attr};
 use crate::game::StateSummary;
@@ -636,19 +637,33 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
         }
     }
 
-    // 9. Start quest.
+    // 9. Start quest — best XP/min, with a short-quest tiebreak: among quests
+    //    whose XP/min is within 10% of the top, pick the shortest. Keeps the
+    //    bot nimble when two quests are effectively equivalent.
     if state.tavern.mode == "quests" && !state.tavern.quests.is_empty() {
-        if let Some(q) = state
+        let xp_per_min = |exp: u32, dur: u32| (exp as u64 * 60_000) / (dur.max(1) as u64);
+        if let Some(best_rate) = state
             .tavern
             .quests
             .iter()
             .filter(|q| state.tavern.thirst_for_adventure_sec >= q.duration_sec)
-            .max_by_key(|q| (q.experience as u64 * 60_000) / (q.duration_sec.max(1) as u64))
+            .map(|q| xp_per_min(q.experience, q.duration_sec))
+            .max()
         {
-            return Some(HeuristicPick {
-                action: Action::StartQuest { quest_index: q.index },
-                reason: "heuristic: pick highest XP/min quest",
-            });
+            let cutoff = best_rate * 9 / 10;
+            if let Some(q) = state
+                .tavern
+                .quests
+                .iter()
+                .filter(|q| state.tavern.thirst_for_adventure_sec >= q.duration_sec)
+                .filter(|q| xp_per_min(q.experience, q.duration_sec) >= cutoff)
+                .min_by_key(|q| q.duration_sec)
+            {
+                return Some(HeuristicPick {
+                    action: Action::StartQuest { quest_index: q.index },
+                    reason: "heuristic: best XP/min quest (short-quest tiebreak within 10%)",
+                });
+            }
         }
     }
 

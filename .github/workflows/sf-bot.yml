@@ -44,12 +44,9 @@ jobs:
           SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
           SF_SERVER: ''
           SF_CHARACTER: ${{ secrets.SF_CHARACTER }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_MODEL: claude-haiku-4-5-20251001
           DRY_RUN: 'false'
           RUN_SECONDS: ${{ github.event.inputs.run_seconds || '1500' }}
           MAX_CYCLES: '2000'
-          CLAUDE_MIN_INTERVAL_SEC: '60'
           RUST_LOG: info
         run: cargo run --quiet
 

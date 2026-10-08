@@ -15,7 +15,6 @@ use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
 
 mod actions;
-mod brain;
 mod game;
 mod log;
 mod strategy;
@@ -37,14 +36,8 @@ async fn main() -> Result<()> {
     let cfg = Config::from_env()?;
     let mut session = login(&cfg).await?;
 
-    let http = reqwest::Client::builder()
-        .user_agent("sf-bot/0.1")
-        .timeout(Duration::from_secs(30))
-        .build()?;
-
     let log_path = PathBuf::from("decisions.jsonl");
     let mut recent: VecDeque<log::DecisionLog> = VecDeque::with_capacity(6);
-    let mut last_claude_at: Option<Instant> = None;
     let mut last_dungeon_refresh: Option<Instant> = None;
     let mut caps = strategy::RuntimeCaps::default();
     let started_at = Instant::now();
@@ -53,7 +46,6 @@ async fn main() -> Result<()> {
         dry_run = cfg.dry_run,
         max_cycles = cfg.max_cycles,
         run_seconds = cfg.run_seconds,
-        claude_min_interval_sec = cfg.claude_min_interval.as_secs(),
         "starting core loop"
     );
 
@@ -227,7 +219,7 @@ async fn main() -> Result<()> {
         }
 
         // Expedition autopilot: if an expedition is active, drive it ourselves.
-        // Claude only picks WHEN to start one.
+        // The strategy picker only chooses WHEN to start one.
         let exp_handled = handle_active_expedition(&mut session, run_deadline, cfg.dry_run).await;
         match exp_handled {
             ExpOutcome::Continue => continue,
@@ -283,58 +275,19 @@ async fn main() -> Result<()> {
         // cap the per-cycle sleep at ~60s so attribute buys and the like
         // get a chance each minute. See the sleep step at the bottom.
 
-        // Heuristic first — covers the mechanical cases cheaply.
-        let decision = if let Some(h) = strategy::pick(&state, &caps) {
-            tracing::info!(
-                reason = h.reason,
-                "strategy picked action without calling Claude"
-            );
-            actions::Decision {
-                action: h.action,
-                reason: h.reason.to_string(),
-            }
-        } else {
-            if let Some(last) = last_claude_at {
-                let since = last.elapsed();
-                if since < cfg.claude_min_interval {
-                    let wait = cfg.claude_min_interval - since;
-                    tracing::debug!("rate-limit Claude by {}s", wait.as_secs());
-                    sleep_bounded(wait, run_deadline).await;
+        // Fully heuristic — no AI fallback. If nothing applies, wait.
+        let decision = match strategy::pick(&state, &caps) {
+            Some(h) => {
+                tracing::info!(reason = h.reason, "strategy picked action");
+                actions::Decision {
+                    action: h.action,
+                    reason: h.reason.to_string(),
                 }
             }
-
-            let recent_snapshot: Vec<log::DecisionLog> = recent.iter().cloned().collect();
-            match brain::decide(
-                &http,
-                &cfg.anthropic_api_key,
-                &cfg.claude_model,
-                &state,
-                &recent_snapshot,
-            )
-            .await
-            {
-                Ok(d) => {
-                    last_claude_at = Some(Instant::now());
-                    d
-                }
-                Err(e) => {
-                    tracing::warn!("Claude call failed: {e:#}");
-                    record_and_log(
-                        &log_path,
-                        &mut recent,
-                        &state,
-                        actions::Decision {
-                            action: actions::Action::Wait,
-                            reason: format!("claude error: {e}"),
-                        },
-                        Some("claude_error".into()),
-                        "fallback_wait",
-                        false,
-                    )?;
-                    sleep_bounded(cfg.claude_min_interval, run_deadline).await;
-                    continue;
-                }
-            }
+            None => actions::Decision {
+                action: actions::Action::Wait,
+                reason: "no heuristic match".to_string(),
+            },
         };
 
         let (invalid_reason, result, executed) = match actions::validate(&decision.action, &state)
@@ -1204,12 +1157,9 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
 }
 
 struct Config {
-    anthropic_api_key: String,
-    claude_model: String,
     dry_run: bool,
     max_cycles: usize,
     run_seconds: Option<u64>,
-    claude_min_interval: Duration,
     sf_username: String,
     sf_password: String,
     sf_server: String,
@@ -1218,10 +1168,6 @@ struct Config {
 
 impl Config {
     fn from_env() -> Result<Self> {
-        let anthropic_api_key =
-            env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY not set")?;
-        let claude_model =
-            env::var("CLAUDE_MODEL").unwrap_or_else(|_| "claude-haiku-4-5-20251001".into());
         let dry_run = env::var("DRY_RUN")
             .map(|v| v.trim().to_lowercase() != "false")
             .unwrap_or(true);
@@ -1234,12 +1180,6 @@ impl Config {
             .and_then(|v| v.parse::<u64>().ok())
             .map(|v| if v == 0 { None } else { Some(v) })
             .unwrap_or(Some(3600));
-        let claude_min_interval = Duration::from_secs(
-            env::var("CLAUDE_MIN_INTERVAL_SEC")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(60u64),
-        );
         let sf_username = env::var("SF_USERNAME").unwrap_or_default();
         let sf_password = env::var("SF_PASSWORD").unwrap_or_default();
         let sf_server = env::var("SF_SERVER").unwrap_or_default();
@@ -1248,12 +1188,9 @@ impl Config {
             return Err(anyhow!("SF_USERNAME and SF_PASSWORD must be set"));
         }
         Ok(Self {
-            anthropic_api_key,
-            claude_model,
             dry_run,
             max_cycles,
             run_seconds,
-            claude_min_interval,
             sf_username,
             sf_password,
             sf_server,

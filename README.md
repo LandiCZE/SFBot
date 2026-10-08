@@ -1,16 +1,16 @@
 # sf-bot
 
-Rust bot that plays a Shakes & Fidget character via [`sf-api`]. Decisions are
-driven by Rust heuristics first (`strategy.rs`), with Claude (`brain.rs`) as a
-fallback only for genuine tie-breaks the heuristics don't cover. Every action is
-validated before execution; the bot **never spends mushrooms** by design.
+Rust bot that plays a Shakes & Fidget character via [`sf-api`]. Fully heuristic:
+all decisions come from `strategy.rs`; when no heuristic applies, the bot waits.
+Every action is validated before execution and the bot **never spends mushrooms**
+by design.
 
 [`sf-api`]: https://docs.rs/sf-api
 
 ## Run locally
 
 ```bash
-cp .env.example .env       # fill in SF_USERNAME, SF_PASSWORD, (optional SF_SERVER / SF_CHARACTER), ANTHROPIC_API_KEY
+cp .env.example .env       # fill in SF_USERNAME, SF_PASSWORD, (optional SF_SERVER / SF_CHARACTER)
 cargo run
 ```
 
@@ -22,12 +22,9 @@ Environment variables:
 | `SF_PASSWORD` | — | S&F password. |
 | `SF_SERVER` | *empty* | Blank → SSO. Set a hostname like `s31.sfgame.eu` for per-server. |
 | `SF_CHARACTER` | *empty* | For SSO with multiple characters, pick by display name. |
-| `ANTHROPIC_API_KEY` | — | Claude Messages API key (only used when heuristics return `None`). |
-| `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | Model to call for tie-breaks. |
 | `DRY_RUN` | `true` | `false` to actually execute actions. |
 | `RUN_SECONDS` | `3600` | Hard runtime cap. `0` disables the cap. |
 | `MAX_CYCLES` | `10000` | Hard cycle cap. |
-| `CLAUDE_MIN_INTERVAL_SEC` | `60` | Minimum spacing between Claude calls (plan's "1/min at most"). |
 
 ## Run on GitHub Actions (free)
 
@@ -42,7 +39,6 @@ Setup:
    - `SF_USERNAME`
    - `SF_PASSWORD`
    - `SF_CHARACTER` (if your SSO account has multiple characters)
-   - `ANTHROPIC_API_KEY`
 4. The cron will auto-trigger on the next `:00` or `:30`. For an immediate test,
    use the **Run workflow** button on the Actions tab (workflow_dispatch).
 
@@ -53,10 +49,9 @@ Public repos have no cap.
 
 ```
 src/
-  main.rs      # loop: Update → autopilot expedition → strategy → Claude fallback → log
-  game.rs      # StateSummary built from sf-api GameState (what Claude/strategy see)
+  main.rs      # loop: Update → autopilot expedition → strategy → log
+  game.rs      # StateSummary built from sf-api GameState (what strategy sees)
   actions.rs   # Action enum + validator (gates everything, enforces no-mushroom rule)
-  strategy.rs  # Pure Rust heuristic action picker (returns None → defer to Claude)
-  brain.rs     # Claude Messages API call via reqwest with tool-use
+  strategy.rs  # Pure Rust heuristic action picker (None → wait)
   log.rs       # Append-only decisions.jsonl
 ```
