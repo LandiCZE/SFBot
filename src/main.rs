@@ -307,6 +307,26 @@ async fn main() -> Result<()> {
                             let feature_err = m.contains("not available")
                                 || m.contains("not unlocked")
                                 || m.contains("not open");
+                            // Task chest rejections ("cannot do this right now")
+                            // don't match the feature_err substrings — skip the
+                            // offending chest unconditionally to avoid infinite
+                            // retries while sf-api still reports it claimable.
+                            if let actions::Action::ClaimTaskChest { track, pos } =
+                                &decision.action
+                            {
+                                let idx = *pos as usize;
+                                match track.as_str() {
+                                    "daily" if idx < 3 => {
+                                        caps.daily_chests_skipped[idx] = true;
+                                        tracing::warn!(pos = idx, "skipping daily chest for this session");
+                                    }
+                                    "event" if idx < 3 => {
+                                        caps.event_chests_skipped[idx] = true;
+                                        tracing::warn!(pos = idx, "skipping event chest for this session");
+                                    }
+                                    _ => {}
+                                }
+                            }
                             if feature_err {
                                 use actions::Action::*;
                                 match &decision.action {

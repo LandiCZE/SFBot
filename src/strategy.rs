@@ -17,6 +17,11 @@ pub struct RuntimeCaps {
     pub witch_disabled: bool,
     pub pets_disabled: bool,
     pub portal_disabled: bool,
+    // Per-chest skip flags: server rejected a claim this session (sf-api
+    // thinks it's claimable but the server disagrees — e.g. "cannot do this
+    // right now"). Keyed by chest position 0..=2 per track.
+    pub daily_chests_skipped: [bool; 3],
+    pub event_chests_skipped: [bool; 3],
 }
 
 /// Minimum free backpack slots required before starting an expedition.
@@ -243,7 +248,13 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
     }
 
     // 3c. Claim task chests (free rewards: silver, mushrooms via chest, items).
+    // Skip chests the server has already rejected this session — sf-api can
+    // report them as claimable while the server returns "cannot do this
+    // right now", which otherwise causes an infinite retry loop.
     for &pos in &state.tasks.daily_claimable_chests {
+        if caps.daily_chests_skipped.get(pos as usize).copied().unwrap_or(false) {
+            continue;
+        }
         return Some(HeuristicPick {
             action: Action::ClaimTaskChest {
                 track: "daily".into(),
@@ -253,6 +264,9 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
         });
     }
     for &pos in &state.tasks.event_claimable_chests {
+        if caps.event_chests_skipped.get(pos as usize).copied().unwrap_or(false) {
+            continue;
+        }
         return Some(HeuristicPick {
             action: Action::ClaimTaskChest {
                 track: "event".into(),
