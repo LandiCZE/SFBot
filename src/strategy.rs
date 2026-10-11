@@ -3,6 +3,7 @@
 //! treats that as a wait.
 
 use crate::actions::{Action, Attr};
+use crate::expedition_policy::{self, DEFAULT_WEIGHTS};
 use crate::game::StateSummary;
 
 /// Runtime caps on features that the server has already told us are "not
@@ -247,6 +248,40 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
         });
     }
 
+    // 3b2. Guild free daily actions. All silver-free, mushroom-safe:
+    //      - Join scheduled defense/attack while sign-up window is open.
+    //      - Portal fight once per day.
+    //      - Hydra while remaining fights > 0 and off cooldown.
+    if let Some(g) = state.guild.as_ref() {
+        if g.defending_sec_until.map(|s| s > 0).unwrap_or(false) && !g.joined_defense {
+            return Some(HeuristicPick {
+                action: Action::GuildJoinDefense,
+                reason: "heuristic: guild defense scheduled — sign up before it starts",
+            });
+        }
+        if g.attacking_sec_until.map(|s| s > 0).unwrap_or(false) && !g.joined_attack {
+            return Some(HeuristicPick {
+                action: Action::GuildJoinAttack,
+                reason: "heuristic: guild attack scheduled — sign up before it starts",
+            });
+        }
+        if !g.portal_fought_today && g.portal_life_percentage > 0 {
+            return Some(HeuristicPick {
+                action: Action::GuildPortalFight,
+                reason: "heuristic: guild portal daily fight available",
+            });
+        }
+        if g.hydra_remaining > 0
+            && g.hydra_next_battle_sec_remaining.unwrap_or(0) <= 0
+            && g.hydra_current_life > 0
+        {
+            return Some(HeuristicPick {
+                action: Action::GuildHydraFight,
+                reason: "heuristic: guild hydra fight available (remaining > 0, off cooldown)",
+            });
+        }
+    }
+
     // 3c. Claim task chests (free rewards: silver, mushrooms via chest, items).
     // Skip chests the server has already rejected this session — sf-api can
     // report them as claimable while the server returns "cannot do this
@@ -293,6 +328,38 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
             action: Action::OpenMail { pos: 0 },
             reason: "heuristic: open unread mail",
         });
+    }
+
+    // 3e2. Guild skill upgrades (treasure / instructor). Silver-only on the
+    //      member side; the mushroom cost comes from the guild pool, not our
+    //      personal pile. Require 3× headroom so we don't starve attribute
+    //      buys or quests. Pet skill is intentionally skipped: it tends to
+    //      cost more pool mushrooms and burns a shared resource.
+    if let Some(g) = state.guild.as_ref() {
+        // Treasure first — gold-boost compounds daily.
+        if g.own_treasure < 200
+            && g.treasure_cost_silver > 0
+            && state.character.silver >= g.treasure_cost_silver.saturating_mul(3)
+        {
+            return Some(HeuristicPick {
+                action: Action::GuildUpgradeSkill {
+                    skill: "treasure".into(),
+                },
+                reason: "heuristic: guild treasure upgrade affordable with 3× silver buffer",
+            });
+        }
+        // Then instructor — XP from quests.
+        if g.own_instructor < 200
+            && g.instructor_cost_silver > 0
+            && state.character.silver >= g.instructor_cost_silver.saturating_mul(3)
+        {
+            return Some(HeuristicPick {
+                action: Action::GuildUpgradeSkill {
+                    skill: "instructor".into(),
+                },
+                reason: "heuristic: guild instructor upgrade affordable with 3× silver buffer",
+            });
+        }
     }
 
     // 3f. Shop upgrade: buy clear upgrade with silver, enough headroom.
@@ -630,6 +697,8 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
     // 8. Start expedition — pre-flight: require >=3 free backpack slots so
     //    the ~4 items an expedition can drop don't overflow. Rule 2
     //    (sell/dismantle junk) will fire first if we're low on slots.
+    //    The pick is routed through expedition_policy — DailyTask > Egg >
+    //    shorter-duration tiebreak. All deterministic, no Claude call.
     if state.tavern.mode == "expeditions" && state.tavern.active_expedition.is_none() {
         if state.character.backpack_free_slots < MIN_FREE_SLOTS_FOR_EXPEDITION {
             tracing::debug!(
@@ -637,16 +706,12 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
                 need = MIN_FREE_SLOTS_FOR_EXPEDITION,
                 "backpack too full for expedition — waiting for a clear cycle"
             );
-        } else if let Some(exp) = state
-            .tavern
-            .expeditions
-            .iter()
-            .filter(|e| state.tavern.thirst_for_adventure_sec >= e.thirst_for_adventure_sec)
-            .min_by_key(|e| e.thirst_for_adventure_sec)
+        } else if let Some(idx) =
+            expedition_policy::should_start_expedition(state, &DEFAULT_WEIGHTS)
         {
             return Some(HeuristicPick {
-                action: Action::StartExpedition { expedition_index: exp.index },
-                reason: "heuristic: idle, expeditions mode, backpack has headroom",
+                action: Action::StartExpedition { expedition_index: idx },
+                reason: "heuristic: idle, expeditions mode, backpack has headroom (policy pick)",
             });
         }
     }

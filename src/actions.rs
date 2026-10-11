@@ -46,6 +46,13 @@ pub enum Action {
     DeleteAllMail,
     ClaimPendingMail { msg_id: i64 },
     SetQuestingPreference { prefer_quests: bool },
+    GuildUpgradeSkill { skill: String }, // "treasure" | "instructor" | "pet"
+    GuildHydraFight,
+    GuildPortalFight,
+    GuildJoinAttack,
+    GuildJoinDefense,
+    PickExpeditionEncounter { pos: u8 },
+    PickExpeditionReward { pos: u8 },
     Wait,
 }
 
@@ -702,6 +709,137 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
                 return Err(
                     "preference change needs full ALU + 0 beers (server also checks 'alu used today')".into(),
                 );
+            }
+            Ok(())
+        }
+        Action::GuildUpgradeSkill { skill } => {
+            let g = state
+                .guild
+                .as_ref()
+                .ok_or_else(|| "not in a guild".to_string())?;
+            let (cur, silver) = match skill.as_str() {
+                "treasure" => (g.own_treasure, g.treasure_cost_silver),
+                "instructor" => (g.own_instructor, g.instructor_cost_silver),
+                "pet" => (g.own_pet, g.pet_cost_silver),
+                other => return Err(format!("unknown guild skill {other:?}")),
+            };
+            if cur >= 200 {
+                return Err(format!("{skill} already at 200 (cap)"));
+            }
+            if silver == 0 {
+                return Err(format!("{skill} upgrade price not yet known"));
+            }
+            if state.character.silver < silver {
+                return Err(format!(
+                    "need {silver} silver for guild {skill}, have {}",
+                    state.character.silver
+                ));
+            }
+            Ok(())
+        }
+        Action::GuildHydraFight => {
+            let g = state
+                .guild
+                .as_ref()
+                .ok_or_else(|| "not in a guild".to_string())?;
+            if g.hydra_remaining == 0 {
+                return Err("no hydra fights remaining today".into());
+            }
+            if g.hydra_next_battle_sec_remaining.unwrap_or(0) > 0 {
+                return Err(format!(
+                    "hydra on cooldown ({}s)",
+                    g.hydra_next_battle_sec_remaining.unwrap_or(0)
+                ));
+            }
+            if g.hydra_current_life == 0 {
+                return Err("hydra is dead (0 life)".into());
+            }
+            Ok(())
+        }
+        Action::GuildPortalFight => {
+            let g = state
+                .guild
+                .as_ref()
+                .ok_or_else(|| "not in a guild".to_string())?;
+            if g.portal_fought_today {
+                return Err("already fought guild portal today".into());
+            }
+            if g.portal_life_percentage == 0 {
+                return Err("portal enemy at 0% HP".into());
+            }
+            Ok(())
+        }
+        Action::GuildJoinAttack => {
+            let g = state
+                .guild
+                .as_ref()
+                .ok_or_else(|| "not in a guild".to_string())?;
+            if g.attacking_sec_until.is_none() {
+                return Err("no scheduled attack".into());
+            }
+            if g.attacking_sec_until.unwrap_or(0) <= 0 {
+                return Err("attack time has passed — sign-up closed".into());
+            }
+            if g.joined_attack {
+                return Err("already joined this attack".into());
+            }
+            Ok(())
+        }
+        Action::GuildJoinDefense => {
+            let g = state
+                .guild
+                .as_ref()
+                .ok_or_else(|| "not in a guild".to_string())?;
+            if g.defending_sec_until.is_none() {
+                return Err("no scheduled defense".into());
+            }
+            if g.defending_sec_until.unwrap_or(0) <= 0 {
+                return Err("defense time has passed — sign-up closed".into());
+            }
+            if g.joined_defense {
+                return Err("already joined this defense".into());
+            }
+            Ok(())
+        }
+        Action::PickExpeditionEncounter { pos } => {
+            let active = state
+                .tavern
+                .active_expedition
+                .as_ref()
+                .ok_or_else(|| "no active expedition".to_string())?;
+            if active.stage != "encounters" {
+                return Err(format!(
+                    "expedition not at an encounter stage (stage={})",
+                    active.stage
+                ));
+            }
+            let n = active.encounters.len() as u8;
+            if n == 0 {
+                return Err("no encounters surfaced in state".into());
+            }
+            if *pos >= n {
+                return Err(format!("encounter pos {pos} out of range (have {n})"));
+            }
+            Ok(())
+        }
+        Action::PickExpeditionReward { pos } => {
+            let active = state
+                .tavern
+                .active_expedition
+                .as_ref()
+                .ok_or_else(|| "no active expedition".to_string())?;
+            if active.stage != "rewards" {
+                return Err(format!(
+                    "expedition not at a reward stage (stage={})",
+                    active.stage
+                ));
+            }
+            let n = active.rewards.len() as u8;
+            if n == 0 {
+                return Err("no rewards surfaced in state".into());
+            }
+            if *pos >= n {
+                return Err(format!("reward pos {pos} out of range (have {n})"));
             }
             Ok(())
         }

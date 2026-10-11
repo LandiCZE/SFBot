@@ -15,6 +15,7 @@ use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
 
 mod actions;
+mod expedition_policy;
 mod game;
 mod log;
 mod strategy;
@@ -421,18 +422,24 @@ async fn handle_active_expedition(
     deadline: Option<Instant>,
     dry_run: bool,
 ) -> ExpOutcome {
-    let stage = {
+    // Build a snapshot of the active expedition for the scorer; sf-api's
+    // Expedition encounter/reward vectors are pub(crate), so we only ever
+    // read them via current_stage() — which the StateSummary already does.
+    let (stage, summary) = {
         let gs = match session.game_state() {
             Some(gs) => gs,
             None => return ExpOutcome::Idle,
         };
-        let active_stage = gs.tavern.expeditions.active().map(|e| e.current_stage());
         let server_is_on_expedition = matches!(
             gs.tavern.current_action,
             sf_api::gamestate::tavern::CurrentAction::Expedition
         );
+        let active_stage = gs.tavern.expeditions.active().map(|e| e.current_stage());
         match active_stage {
-            Some(s) => s,
+            Some(s) => {
+                let summary = game::StateSummary::from_game_state(gs);
+                (s, summary)
+            }
             None if server_is_on_expedition => {
                 // Zombie: sf-api filters out Finished expeditions, but the server
                 // still thinks we're busy. Send Continue to ack and clear.
@@ -450,6 +457,14 @@ async fn handle_active_expedition(
         }
     };
 
+    let active = match summary.tavern.active_expedition.as_ref() {
+        Some(a) => a,
+        None => {
+            tracing::warn!("expedition stage set but summary active_expedition is None");
+            return ExpOutcome::Continue;
+        }
+    };
+
     match stage {
         ExpeditionStage::Waiting { busy_until, .. } => {
             let rem = (busy_until - chrono::Local::now()).num_seconds();
@@ -462,15 +477,20 @@ async fn handle_active_expedition(
             ExpOutcome::Continue
         }
         ExpeditionStage::Encounters(_) => {
+            let pos = expedition_policy::pick_encounter(
+                active,
+                &expedition_policy::DEFAULT_WEIGHTS,
+            )
+            .unwrap_or(0);
             if dry_run {
-                tracing::info!("[dry-run] would ExpeditionPickEncounter(pos=0)");
+                tracing::info!(pos, "[dry-run] would ExpeditionPickEncounter");
             } else if let Err(e) = session
-                .send_command(Command::ExpeditionPickEncounter { pos: 0 })
+                .send_command(Command::ExpeditionPickEncounter { pos: pos as usize })
                 .await
             {
                 return ExpOutcome::Error(e.into());
             } else {
-                tracing::info!("expedition: picked encounter 0");
+                tracing::info!(pos, "expedition: picked encounter");
             }
             // Server rate-limits burst commands; a brief pause avoids sessionid-invalid.
             sleep(Duration::from_millis(800)).await;
@@ -488,15 +508,20 @@ async fn handle_active_expedition(
             ExpOutcome::Continue
         }
         ExpeditionStage::Rewards(_) => {
+            let pos = expedition_policy::pick_reward(
+                active,
+                &expedition_policy::DEFAULT_WEIGHTS,
+            )
+            .unwrap_or(0);
             if dry_run {
-                tracing::info!("[dry-run] would ExpeditionPickReward(pos=0)");
+                tracing::info!(pos, "[dry-run] would ExpeditionPickReward");
             } else if let Err(e) = session
-                .send_command(Command::ExpeditionPickReward { pos: 0 })
+                .send_command(Command::ExpeditionPickReward { pos: pos as usize })
                 .await
             {
                 return ExpOutcome::Error(e.into());
             } else {
-                tracing::info!("expedition: picked reward 0");
+                tracing::info!(pos, "expedition: picked reward");
             }
             sleep(Duration::from_millis(800)).await;
             ExpOutcome::Continue
@@ -1171,6 +1196,60 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
                 })
                 .await?;
             Ok(format!("fought {} (L{})", target.0, target.1))
+        }
+        Action::GuildUpgradeSkill { skill } => {
+            let gs_skill = game::guild_skill_from_name(skill)
+                .ok_or_else(|| anyhow!("unknown guild skill {skill:?}"))?;
+            let current = {
+                let gs = session
+                    .game_state()
+                    .ok_or_else(|| anyhow!("game_state missing before guild upgrade"))?;
+                let g = gs.guild.as_ref().ok_or_else(|| anyhow!("not in guild"))?;
+                match gs_skill {
+                    sf_api::gamestate::guild::GuildSkill::Treasure => g.own_treasure_skill,
+                    sf_api::gamestate::guild::GuildSkill::Instructor => g.own_instructor_skill,
+                    sf_api::gamestate::guild::GuildSkill::Pet => g.own_pet_lvl,
+                }
+            };
+            session
+                .send_command(Command::GuildIncreaseSkill {
+                    skill: gs_skill,
+                    current,
+                })
+                .await?;
+            Ok(format!("guild: upgraded {skill} ({current} -> {})", current + 1))
+        }
+        Action::GuildHydraFight => {
+            session
+                .send_command(Command::GuildPetBattle {
+                    use_mushroom: false,
+                })
+                .await?;
+            Ok("guild: hydra fight".to_string())
+        }
+        Action::GuildPortalFight => {
+            session.send_command(Command::GuildPortalBattle).await?;
+            Ok("guild: portal fight".to_string())
+        }
+        Action::GuildJoinAttack => {
+            session.send_command(Command::GuildJoinAttack).await?;
+            Ok("guild: joined attack".to_string())
+        }
+        Action::GuildJoinDefense => {
+            session.send_command(Command::GuildJoinDefense).await?;
+            Ok("guild: joined defense".to_string())
+        }
+        Action::PickExpeditionEncounter { pos } => {
+            session
+                .send_command(Command::ExpeditionPickEncounter { pos: *pos as usize })
+                .await?;
+            Ok(format!("expedition: picked encounter {pos}"))
+        }
+        Action::PickExpeditionReward { pos } => {
+            session
+                .send_command(Command::ExpeditionPickReward { pos: *pos as usize })
+                .await?;
+            Ok(format!("expedition: picked reward {pos}"))
         }
         Action::Wait => Ok("wait".to_string()),
     }

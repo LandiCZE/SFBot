@@ -5,7 +5,9 @@ use sf_api::gamestate::GameState;
 use sf_api::gamestate::character::Character;
 use sf_api::gamestate::dungeons::{Dungeon, DungeonProgress, LightDungeon, ShadowDungeon};
 use sf_api::gamestate::fortress::{FortressBuildingType, FortressResourceType, FortressUnitType};
+use sf_api::gamestate::guild::{BattlesJoined, Guild, GuildRank, GuildSkill};
 use sf_api::gamestate::items::{EquipmentSlot, Item, ItemType, PotionSize, PotionType};
+use sf_api::gamestate::rewards::Reward;
 use sf_api::gamestate::social::ClaimableStatus;
 use sf_api::gamestate::tavern::{AvailableTasks, CurrentAction, ExpeditionStage};
 use sf_api::gamestate::underworld::{UnderworldBuildingType, UnderworldResourceType, UnderworldUnitType};
@@ -36,6 +38,33 @@ pub struct StateSummary {
     pub upgradable_equipped: Vec<UpgradableItemBrief>,
     pub equipment: Vec<EquippedSummary>,
     pub backpack: Vec<BackpackItemSummary>,
+    pub guild: Option<GuildSummary>,
+}
+
+#[derive(Serialize)]
+pub struct GuildSummary {
+    pub name: String,
+    pub my_rank: &'static str,
+    pub own_treasure: u16,
+    pub own_instructor: u16,
+    pub own_pet: u16,
+    pub guild_pet_max_lvl: u16,
+    pub treasure_cost_silver: u64,
+    pub treasure_cost_pool_mushrooms: u16,
+    pub instructor_cost_silver: u64,
+    pub instructor_cost_pool_mushrooms: u16,
+    pub pet_cost_silver: u64,
+    pub pet_cost_pool_mushrooms: u16,
+    pub hydra_remaining: u16,
+    pub hydra_next_battle_sec_remaining: Option<i64>,
+    pub hydra_current_life: u64,
+    pub hydra_max_life: u64,
+    pub portal_life_percentage: u8,
+    pub portal_fought_today: bool,
+    pub defending_sec_until: Option<i64>,
+    pub attacking_sec_until: Option<i64>,
+    pub joined_attack: bool,
+    pub joined_defense: bool,
 }
 
 #[derive(Serialize)]
@@ -243,6 +272,32 @@ pub struct ActiveExpeditionSummary {
     pub heroism: i32,
     pub stage: &'static str,
     pub stage_remaining_sec: Option<i64>,
+    pub encounters: Vec<ExpeditionEncounterBrief>,
+    pub rewards: Vec<ExpeditionRewardBrief>,
+}
+
+#[derive(Serialize)]
+pub struct ExpeditionEncounterBrief {
+    pub pos: u8,
+    pub typ: String,
+    pub heroism: i32,
+    /// True if `typ` matches the expedition's `target_thing` and we still
+    /// need more (target_current < target_amount).
+    pub closes_target: bool,
+    /// True if `typ` is itself a bounty token (DummyBounty, DragonBounty, …);
+    /// picking the bounty item is what unlocks the +10 for the matching
+    /// collectibles later in the run.
+    pub is_bounty: bool,
+}
+
+#[derive(Serialize)]
+pub struct ExpeditionRewardBrief {
+    pub pos: u8,
+    pub kind: &'static str, // "silver" | "experience" | "mushroom" | "resource" | "item" | "other"
+    pub silver: u64,
+    pub experience: u64,
+    pub mushrooms: u32,
+    pub item_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -517,16 +572,38 @@ impl StateSummary {
         };
 
         let active_expedition = gs.tavern.expeditions.active().map(|e| {
-            let (stage, remaining) = match e.current_stage() {
-                ExpeditionStage::Encounters(_) => ("encounters", None),
-                ExpeditionStage::Boss(_) => ("boss", None),
-                ExpeditionStage::Rewards(_) => ("rewards", None),
-                ExpeditionStage::Waiting { busy_until, .. } => {
-                    let secs = (busy_until - Local::now()).num_seconds();
-                    ("waiting", Some(secs))
+            let stage_val = e.current_stage();
+            let (stage, remaining, encounters, rewards) = match &stage_val {
+                ExpeditionStage::Encounters(encs) => {
+                    let briefs = encs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, enc)| ExpeditionEncounterBrief {
+                            pos: i as u8,
+                            typ: format!("{:?}", enc.typ),
+                            heroism: enc.heroism,
+                            closes_target: enc.typ == e.target_thing
+                                && e.target_current < e.target_amount,
+                            is_bounty: enc.typ.is_bounty_for().is_some(),
+                        })
+                        .collect();
+                    ("encounters", None, briefs, Vec::new())
                 }
-                ExpeditionStage::Finished => ("finished", None),
-                ExpeditionStage::Unknown => ("unknown", None),
+                ExpeditionStage::Boss(_) => ("boss", None, Vec::new(), Vec::new()),
+                ExpeditionStage::Rewards(rs) => {
+                    let briefs = rs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| expedition_reward_brief(i as u8, r))
+                        .collect();
+                    ("rewards", None, Vec::new(), briefs)
+                }
+                ExpeditionStage::Waiting { busy_until, .. } => {
+                    let secs = (*busy_until - Local::now()).num_seconds();
+                    ("waiting", Some(secs), Vec::new(), Vec::new())
+                }
+                ExpeditionStage::Finished => ("finished", None, Vec::new(), Vec::new()),
+                ExpeditionStage::Unknown => ("unknown", None, Vec::new(), Vec::new()),
             };
             ActiveExpeditionSummary {
                 target: format!("{:?}", e.target_thing),
@@ -536,6 +613,8 @@ impl StateSummary {
                 heroism: e.heroism,
                 stage,
                 stage_remaining_sec: remaining,
+                encounters,
+                rewards,
             }
         });
 
@@ -598,6 +677,7 @@ impl StateSummary {
         let witch = gs.witch.as_ref().map(witch_summary);
         let toilet = gs.tavern.toilet.as_ref().map(toilet_summary);
         let upgradable_equipped = upgradable_equipped_items(gs);
+        let guild = gs.guild.as_ref().map(|g| guild_summary(g, &ch.name));
 
         let equipment: Vec<EquippedSummary> = ch
             .equipment
@@ -686,9 +766,111 @@ impl StateSummary {
             upgradable_equipped,
             equipment,
             backpack,
+            guild,
         }
     }
 }
+
+fn guild_summary(g: &Guild, my_name: &str) -> GuildSummary {
+    use sf_api::misc::EnumMapGet;
+    let my_rank = g
+        .members
+        .iter()
+        .find(|m| m.name == my_name)
+        .map(|m| guild_rank_name(m.guild_rank))
+        .unwrap_or("member");
+    let me = g.members.iter().find(|m| m.name == my_name);
+    let (joined_defense, joined_attack) = match me.and_then(|m| m.battles_joined) {
+        None => (false, false),
+        Some(BattlesJoined::Defense) => (true, false),
+        Some(BattlesJoined::Attack) => (false, true),
+        Some(BattlesJoined::Both) => (true, true),
+    };
+    let today = Local::now().date_naive();
+    let portal_fought_today = me
+        .and_then(|m| m.portal_fought)
+        .map(|t| t.date_naive() == today)
+        .unwrap_or(false);
+    let treasure_cost = g.upgrade_price.get(GuildSkill::Treasure);
+    let instructor_cost = g.upgrade_price.get(GuildSkill::Instructor);
+    let pet_cost = g.upgrade_price.get(GuildSkill::Pet);
+    let hydra_next = g
+        .hydra
+        .next_battle
+        .map(|t| (t - Local::now()).num_seconds());
+    let defending_sec_until = g
+        .defending
+        .as_ref()
+        .map(|b| (b.date - Local::now()).num_seconds());
+    let attacking_sec_until = g
+        .attacking
+        .as_ref()
+        .map(|b| (b.date - Local::now()).num_seconds());
+    GuildSummary {
+        name: g.name.clone(),
+        my_rank,
+        own_treasure: g.own_treasure_skill,
+        own_instructor: g.own_instructor_skill,
+        own_pet: g.own_pet_lvl,
+        guild_pet_max_lvl: g.pet_max_lvl,
+        treasure_cost_silver: treasure_cost.silver,
+        treasure_cost_pool_mushrooms: treasure_cost.mushrooms,
+        instructor_cost_silver: instructor_cost.silver,
+        instructor_cost_pool_mushrooms: instructor_cost.mushrooms,
+        pet_cost_silver: pet_cost.silver,
+        pet_cost_pool_mushrooms: pet_cost.mushrooms,
+        hydra_remaining: g.hydra.remaining_fights,
+        hydra_next_battle_sec_remaining: hydra_next,
+        hydra_current_life: g.hydra.current_life,
+        hydra_max_life: g.hydra.max_life,
+        portal_life_percentage: g.portal.life_percentage,
+        portal_fought_today,
+        defending_sec_until,
+        attacking_sec_until,
+        joined_attack,
+        joined_defense,
+    }
+}
+
+fn guild_rank_name(r: GuildRank) -> &'static str {
+    match r {
+        GuildRank::Leader => "leader",
+        GuildRank::Officer => "officer",
+        GuildRank::Member => "member",
+        GuildRank::Invited => "invited",
+    }
+}
+
+pub fn guild_skill_from_name(n: &str) -> Option<GuildSkill> {
+    Some(match n {
+        "treasure" => GuildSkill::Treasure,
+        "instructor" => GuildSkill::Instructor,
+        "pet" => GuildSkill::Pet,
+        _ => return None,
+    })
+}
+
+fn expedition_reward_brief(pos: u8, r: &Reward) -> ExpeditionRewardBrief {
+    use sf_api::gamestate::rewards::RewardType::*;
+    let (kind, silver, experience, mushrooms, item_name) = match r.typ {
+        Silver => ("silver", r.amount, 0u64, 0u32, None),
+        XP => ("experience", 0, r.amount, 0, None),
+        Mushrooms => ("mushroom", 0, 0, r.amount as u32, None),
+        Wood | Stone | Arcane | Metal | Souls => ("resource", 0, 0, 0, Some(format!("{:?}", r.typ))),
+        Fruit(_) | FruitBasket => ("fruit", 0, 0, 0, Some(format!("{:?}", r.typ))),
+        Honor => ("honor", r.amount, 0, 0, None), // treat honor as a weak silver proxy
+        _ => ("other", 0, 0, 0, Some(format!("{:?}", r.typ))),
+    };
+    ExpeditionRewardBrief {
+        pos,
+        kind,
+        silver,
+        experience,
+        mushrooms,
+        item_name,
+    }
+}
+
 
 fn witch_summary(w: &sf_api::gamestate::unlockables::Witch) -> WitchSummary {
     WitchSummary {
