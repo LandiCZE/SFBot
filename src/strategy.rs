@@ -676,7 +676,72 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
         }
     }
 
-    // 7. Arena fight.
+    // 7. Tavern thirst — spend it before arena. Expeditions/quests consume
+    //    thirst_for_adventure, which is capped (overflow is lost). Arena is a
+    //    daily fight pool that doesn't compete with thirst, so let it wait.
+    if idle {
+        // Start expedition — pre-flight: require >=3 free backpack slots so
+        // the ~4 items an expedition can drop don't overflow. Rule 2
+        // (sell/dismantle junk) will fire first if we're low on slots.
+        // The pick is routed through expedition_policy — DailyTask > Egg >
+        // shorter-duration tiebreak. All deterministic, no Claude call.
+        if state.tavern.mode == "expeditions" && state.tavern.active_expedition.is_none() {
+            if state.character.backpack_free_slots < MIN_FREE_SLOTS_FOR_EXPEDITION {
+                tracing::debug!(
+                    free = state.character.backpack_free_slots,
+                    need = MIN_FREE_SLOTS_FOR_EXPEDITION,
+                    "backpack too full for expedition — waiting for a clear cycle"
+                );
+            } else if let Some(idx) =
+                expedition_policy::should_start_expedition(state, &DEFAULT_WEIGHTS)
+            {
+                return Some(HeuristicPick {
+                    action: Action::StartExpedition { expedition_index: idx },
+                    reason: "heuristic: idle, expeditions mode, backpack has headroom (policy pick)",
+                });
+            }
+        }
+
+        // Start quest — best XP/min, with a short-quest tiebreak: among quests
+        // whose XP/min is within 10% of the top, pick the shortest. Keeps the
+        // bot nimble when two quests are effectively equivalent.
+        if state.tavern.mode == "quests" && !state.tavern.quests.is_empty() {
+            let xp_per_min = |exp: u32, dur: u32| (exp as u64 * 60_000) / (dur.max(1) as u64);
+            if let Some(best_rate) = state
+                .tavern
+                .quests
+                .iter()
+                .filter(|q| state.tavern.thirst_for_adventure_sec >= q.duration_sec)
+                .map(|q| xp_per_min(q.experience, q.duration_sec))
+                .max()
+            {
+                let cutoff = best_rate * 9 / 10;
+                if let Some(q) = state
+                    .tavern
+                    .quests
+                    .iter()
+                    .filter(|q| state.tavern.thirst_for_adventure_sec >= q.duration_sec)
+                    .filter(|q| xp_per_min(q.experience, q.duration_sec) >= cutoff)
+                    .min_by_key(|q| q.duration_sec)
+                {
+                    return Some(HeuristicPick {
+                        action: Action::StartQuest { quest_index: q.index },
+                        reason: "heuristic: best XP/min quest (short-quest tiebreak within 10%)",
+                    });
+                }
+            }
+        }
+
+        // Guard work if thirst drained — passive silver until thirst refills.
+        if state.tavern.thirst_for_adventure_sec == 0 {
+            return Some(HeuristicPick {
+                action: Action::StartGuardWork { hours: 10 },
+                reason: "heuristic: thirst drained — long guard shift for passive silver",
+            });
+        }
+    }
+
+    // 8. Arena fight.
     if state.arena.off_cooldown && !state.arena.enemy_ids.is_empty() {
         return Some(HeuristicPick {
             action: Action::FightArena,
@@ -684,7 +749,7 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
         });
     }
 
-    // 7b. Housekeeping: trim inbox once it crosses 80% of capacity.
+    // 9. Housekeeping: trim inbox once it crosses 80% of capacity.
     if state.mail.inbox_capacity > 0
         && state.mail.inbox_total * 10 >= state.mail.inbox_capacity as usize * 8
     {
@@ -694,69 +759,18 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
         });
     }
 
-    if !idle {
-        return None;
-    }
-
-    // 8. Start expedition — pre-flight: require >=3 free backpack slots so
-    //    the ~4 items an expedition can drop don't overflow. Rule 2
-    //    (sell/dismantle junk) will fire first if we're low on slots.
-    //    The pick is routed through expedition_policy — DailyTask > Egg >
-    //    shorter-duration tiebreak. All deterministic, no Claude call.
-    if state.tavern.mode == "expeditions" && state.tavern.active_expedition.is_none() {
-        if state.character.backpack_free_slots < MIN_FREE_SLOTS_FOR_EXPEDITION {
-            tracing::debug!(
-                free = state.character.backpack_free_slots,
-                need = MIN_FREE_SLOTS_FOR_EXPEDITION,
-                "backpack too full for expedition — waiting for a clear cycle"
-            );
-        } else if let Some(idx) =
-            expedition_policy::should_start_expedition(state, &DEFAULT_WEIGHTS)
-        {
-            return Some(HeuristicPick {
-                action: Action::StartExpedition { expedition_index: idx },
-                reason: "heuristic: idle, expeditions mode, backpack has headroom (policy pick)",
-            });
-        }
-    }
-
-    // 9. Start quest — best XP/min, with a short-quest tiebreak: among quests
-    //    whose XP/min is within 10% of the top, pick the shortest. Keeps the
-    //    bot nimble when two quests are effectively equivalent.
-    if state.tavern.mode == "quests" && !state.tavern.quests.is_empty() {
-        let xp_per_min = |exp: u32, dur: u32| (exp as u64 * 60_000) / (dur.max(1) as u64);
-        if let Some(best_rate) = state
-            .tavern
-            .quests
-            .iter()
-            .filter(|q| state.tavern.thirst_for_adventure_sec >= q.duration_sec)
-            .map(|q| xp_per_min(q.experience, q.duration_sec))
-            .max()
-        {
-            let cutoff = best_rate * 9 / 10;
-            if let Some(q) = state
-                .tavern
-                .quests
-                .iter()
-                .filter(|q| state.tavern.thirst_for_adventure_sec >= q.duration_sec)
-                .filter(|q| xp_per_min(q.experience, q.duration_sec) >= cutoff)
-                .min_by_key(|q| q.duration_sec)
-            {
-                return Some(HeuristicPick {
-                    action: Action::StartQuest { quest_index: q.index },
-                    reason: "heuristic: best XP/min quest (short-quest tiebreak within 10%)",
-                });
-            }
-        }
-    }
-
-    // 10. Guard work if thirst drained.
-    if state.tavern.thirst_for_adventure_sec == 0 && idle {
-        return Some(HeuristicPick {
-            action: Action::StartGuardWork { hours: 10 },
-            reason: "heuristic: thirst drained — long guard shift for passive silver",
-        });
-    }
-
+    // Nothing matched — log the knobs that most often explain it so the next
+    // "wait" cycle in the log is self-diagnosing.
+    tracing::warn!(
+        idle,
+        tavern_action = state.tavern.current_action,
+        tavern_mode = state.tavern.mode,
+        thirst_sec = state.tavern.thirst_for_adventure_sec,
+        backpack_free = state.character.backpack_free_slots,
+        arena_cd = state.arena.off_cooldown,
+        fortress_present = state.fortress.is_some(),
+        underworld_present = state.underworld.is_some(),
+        "no heuristic matched — wait"
+    );
     None
 }
