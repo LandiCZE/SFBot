@@ -47,7 +47,7 @@ jobs:
           DRY_RUN: 'false'
           RUN_SECONDS: ${{ github.event.inputs.run_seconds || '1500' }}
           MAX_CYCLES: '2000'
-          RUST_LOG: info
+          RUST_LOG: info,sf_api::gamestate=error,sf_api::session=error
         run: cargo run --quiet
 
       - name: Upload decisions.jsonl
