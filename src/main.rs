@@ -235,6 +235,14 @@ async fn main() -> Result<()> {
 
         // Expedition autopilot: if an expedition is active, drive it ourselves.
         // The strategy picker only chooses WHEN to start one.
+        // UpdateDungeons or another autopilot can wipe sf-api's gamestate on the
+        // 2024 server; the handler reads live game_state() and would otherwise
+        // bail with Idle, leaving the expedition stuck. Refresh if needed.
+        if session.game_state().is_none() {
+            if let Err(e) = session.send_command(Command::Update).await {
+                tracing::warn!("Update recovery before expedition handler failed: {e:#}");
+            }
+        }
         let exp_handled = handle_active_expedition(&mut session, run_deadline, cfg.dry_run).await;
         match exp_handled {
             ExpOutcome::Continue => continue,
