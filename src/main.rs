@@ -81,16 +81,30 @@ async fn main() -> Result<()> {
             continue;
         }
 
+        // Capture the state snapshot now, before any autopilot send_commands.
+        // sf-api wipes its internal gamestate on any send_command error, so if a
+        // follow-up call fails we'd lose the state we just fetched. The strategy
+        // runs on this snapshot regardless of autopilot outcomes.
+        let state = match session.game_state() {
+            Some(gs) => game::StateSummary::from_game_state(gs),
+            None => {
+                tracing::warn!("game_state() is None after Update — retry after backoff");
+                sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+
         // UpdateDungeons every ~5 min — Update doesn't refresh dungeon progress.
         let needs_dungeon_refresh = last_dungeon_refresh
             .map(|t| t.elapsed() > Duration::from_secs(300))
             .unwrap_or(true);
         if needs_dungeon_refresh {
             if let Err(e) = session.send_command(Command::UpdateDungeons).await {
-                tracing::debug!("UpdateDungeons failed: {e:#}");
-            } else {
-                last_dungeon_refresh = Some(Instant::now());
+                tracing::warn!("UpdateDungeons failed: {e:#}");
             }
+            // Mark attempted even on failure so one broken response doesn't make
+            // us hammer this call (and re-login) every cycle.
+            last_dungeon_refresh = Some(Instant::now());
         }
 
         // Fortress autopilot: finish an upgrade whose timer has elapsed. Server
@@ -231,18 +245,6 @@ async fn main() -> Result<()> {
                 continue;
             }
         }
-
-        let state = match session.game_state() {
-            Some(gs) => game::StateSummary::from_game_state(gs),
-            None => {
-                // Update returned Ok but sf-api didn't populate the GameState
-                // (seen on "Untested S&F Server version" responses). Transient —
-                // back off and retry rather than killing the whole run.
-                tracing::warn!("game_state() is None after Update — retry after backoff");
-                sleep(Duration::from_secs(10)).await;
-                continue;
-            }
-        };
 
         // Reward collection: if the busy timer has elapsed, collect first.
         // Then fall through so strategy can run this cycle.
