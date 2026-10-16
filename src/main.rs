@@ -232,11 +232,16 @@ async fn main() -> Result<()> {
             }
         }
 
-        let state = {
-            let gs = session
-                .game_state()
-                .ok_or_else(|| anyhow!("game_state() is None after Update"))?;
-            game::StateSummary::from_game_state(gs)
+        let state = match session.game_state() {
+            Some(gs) => game::StateSummary::from_game_state(gs),
+            None => {
+                // Update returned Ok but sf-api didn't populate the GameState
+                // (seen on "Untested S&F Server version" responses). Transient —
+                // back off and retry rather than killing the whole run.
+                tracing::warn!("game_state() is None after Update — retry after backoff");
+                sleep(Duration::from_secs(10)).await;
+                continue;
+            }
         };
 
         // Reward collection: if the busy timer has elapsed, collect first.
