@@ -328,6 +328,16 @@ async fn main() -> Result<()> {
                                     _ => {}
                                 }
                             }
+                            // Guild portal rejections (e.g. "level too low")
+                            // don't match the feature_err substrings. Treat
+                            // any exec error as "disable for this session" —
+                            // all documented failure modes (level, already
+                            // fought, 0 HP, not in guild) are stable within
+                            // a session.
+                            if matches!(&decision.action, actions::Action::GuildPortalFight) {
+                                caps.guild_portal_disabled = true;
+                                tracing::warn!("disabling guild portal for this session");
+                            }
                             if feature_err {
                                 use actions::Action::*;
                                 match &decision.action {

@@ -18,6 +18,7 @@ pub struct RuntimeCaps {
     pub witch_disabled: bool,
     pub pets_disabled: bool,
     pub portal_disabled: bool,
+    pub guild_portal_disabled: bool,
     // Per-chest skip flags: server rejected a claim this session (sf-api
     // thinks it's claimable but the server disagrees — e.g. "cannot do this
     // right now"). Keyed by chest position 0..=2 per track.
@@ -265,7 +266,10 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
                 reason: "heuristic: guild attack scheduled — sign up before it starts",
             });
         }
-        if !g.portal_fought_today && g.portal_life_percentage > 0 {
+        if !g.portal_fought_today
+            && g.portal_life_percentage > 0
+            && !caps.guild_portal_disabled
+        {
             return Some(HeuristicPick {
                 action: Action::GuildPortalFight,
                 reason: "heuristic: guild portal daily fight available",
