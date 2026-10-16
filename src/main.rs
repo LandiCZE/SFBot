@@ -305,6 +305,15 @@ async fn main() -> Result<()> {
                 if cfg.dry_run {
                     (None, "dry_run".to_string(), false)
                 } else {
+                    // Autopilot calls earlier in the cycle (e.g. UpdateDungeons on
+                    // the 2024 server) can wipe sf-api's gamestate on error. Many
+                    // action handlers need a live gamestate — refresh it here so
+                    // they don't hit "game_state missing before X".
+                    if session.game_state().is_none() {
+                        if let Err(e) = session.send_command(Command::Update).await {
+                            tracing::warn!("Update re-send before action failed: {e:#}");
+                        }
+                    }
                     match execute(&mut session, &decision.action).await {
                         Ok(msg) => (None, msg, true),
                         Err(e) => {
