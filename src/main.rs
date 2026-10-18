@@ -107,6 +107,16 @@ async fn main() -> Result<()> {
             last_dungeon_refresh = Some(Instant::now());
         }
 
+        // UpdateDungeons failures wipe sf-api's gamestate on the 2024 server.
+        // Restore it so the autopilot blocks below (fortress finish, underworld
+        // finish, expedition handler) see live state instead of silently
+        // skipping their Some(gs) guards.
+        if session.game_state().is_none() {
+            if let Err(e) = session.send_command(Command::Update).await {
+                tracing::warn!("Update recovery after autopilot failed: {e:#}");
+            }
+        }
+
         // Fortress autopilot: finish an upgrade whose timer has elapsed. Server
         // requires an explicit FortressBuildFinish{mushrooms:0} even when the
         // timer is done — Update won't credit it on its own.
