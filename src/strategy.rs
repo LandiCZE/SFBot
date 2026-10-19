@@ -390,21 +390,29 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
         }
     }
 
-    // 4. Fortress: gather resource ≥ 60% full. Lower threshold trades
-    // per-gather efficiency for less risk of hitting the warehouse cap
-    // (where workers stall and production is wasted).
+    // 4. Fortress: collect from the production building (woodcutter / quarry
+    // / academy) when its own buffer is ≥60% full. This is what stalls
+    // workers when it hits 100% — not the warehouse. Also require warehouse
+    // headroom (current < limit), since collect fails if the warehouse is
+    // already capped.
     if let Some(f) = fortress_opt {
-        for (name, cur, lim) in [
-            ("wood", f.wood_current, f.wood_limit),
-            ("stone", f.stone_current, f.stone_limit),
-            ("experience", f.experience_current, f.experience_limit),
+        for (name, pending, prod_lim, wh_cur, wh_lim) in [
+            ("wood", f.wood_pending, f.wood_production_limit, f.wood_current, f.wood_limit),
+            ("stone", f.stone_pending, f.stone_production_limit, f.stone_current, f.stone_limit),
+            (
+                "experience",
+                f.experience_pending,
+                f.experience_production_limit,
+                f.experience_current,
+                f.experience_limit,
+            ),
         ] {
-            if lim > 0 && cur * 10 >= lim * 6 {
+            if prod_lim > 0 && pending * 10 >= prod_lim * 6 && wh_cur < wh_lim {
                 return Some(HeuristicPick {
                     action: Action::FortressGatherResource {
                         resource: name.into(),
                     },
-                    reason: "heuristic: fortress resource ≥ 60% full — gather",
+                    reason: "heuristic: fortress producer buffer ≥ 60% full — gather",
                 });
             }
         }

@@ -390,12 +390,22 @@ pub struct MailSummary {
 #[derive(Serialize)]
 pub struct FortressSummary {
     pub honor: u32,
+    // Warehouse (main storage) — `current`/`limit`.
     pub wood_current: u64,
     pub wood_limit: u64,
     pub stone_current: u64,
     pub stone_limit: u64,
     pub experience_current: u64,
     pub experience_limit: u64,
+    // Production building buffer (woodcutter/quarry/academy). When
+    // `pending == production_limit`, that producer stalls — the real
+    // trigger for a gather action, not the warehouse fill.
+    pub wood_pending: u64,
+    pub wood_production_limit: u64,
+    pub stone_pending: u64,
+    pub stone_production_limit: u64,
+    pub experience_pending: u64,
+    pub experience_production_limit: u64,
     pub buildings: Vec<FortressBuildingBrief>,
     pub units: Vec<FortressUnitBrief>,
     pub upgrade_in_progress: Option<FortressUpgradeInfo>,
@@ -1494,6 +1504,12 @@ fn fortress_summary(
         stone_limit: stone.limit,
         experience_current: exp.current,
         experience_limit: exp.limit,
+        wood_pending: wood.production.last_collectable,
+        wood_production_limit: wood.production.limit,
+        stone_pending: stone.production.last_collectable,
+        stone_production_limit: stone.production.limit,
+        experience_pending: exp.production.last_collectable,
+        experience_production_limit: exp.production.limit,
         buildings,
         units,
         upgrade_in_progress,
