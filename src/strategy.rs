@@ -390,19 +390,21 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
         }
     }
 
-    // 4. Fortress: gather overflowing resource.
+    // 4. Fortress: gather resource ≥ 60% full. Lower threshold trades
+    // per-gather efficiency for less risk of hitting the warehouse cap
+    // (where workers stall and production is wasted).
     if let Some(f) = fortress_opt {
         for (name, cur, lim) in [
             ("wood", f.wood_current, f.wood_limit),
             ("stone", f.stone_current, f.stone_limit),
             ("experience", f.experience_current, f.experience_limit),
         ] {
-            if lim > 0 && cur * 10 >= lim * 9 {
+            if lim > 0 && cur * 10 >= lim * 6 {
                 return Some(HeuristicPick {
                     action: Action::FortressGatherResource {
                         resource: name.into(),
                     },
-                    reason: "heuristic: fortress resource ≥ 90% full — gather",
+                    reason: "heuristic: fortress resource ≥ 60% full — gather",
                 });
             }
         }
