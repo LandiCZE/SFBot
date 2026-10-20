@@ -2,6 +2,8 @@
 //! do (busy timer, or genuinely idle with no eligible action) — the main loop
 //! treats that as a wait.
 
+use std::collections::HashSet;
+
 use crate::actions::{Action, Attr};
 use crate::expedition_policy::{self, DEFAULT_WEIGHTS};
 use crate::game::StateSummary;
@@ -24,6 +26,10 @@ pub struct RuntimeCaps {
     // right now"). Keyed by chest position 0..=2 per track.
     pub daily_chests_skipped: [bool; 3],
     pub event_chests_skipped: [bool; 3],
+    // Fortress unit names ("soldier"/"archer"/"magician") whose training the
+    // server has already rejected this session — e.g. the barracks is mid-
+    // upgrade. Prevents the top-up heuristic from re-firing every cycle.
+    pub fortress_units_skipped: HashSet<String>,
 }
 
 /// Minimum free backpack slots required before starting an expedition.
@@ -444,18 +450,33 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
             if !u.has_training_building {
                 continue;
             }
+            if caps.fortress_units_skipped.contains(u.name) {
+                continue;
+            }
             if u.training_finishes_in_sec.map(|s| s > 0).unwrap_or(false) {
                 continue;
             }
-            // Target a modest standing army; retrain in batches of 5.
+            // Respect the server's unit cap (`count + in_training <= limit`).
+            // Limit is 0 when the training building hasn't been raised far
+            // enough yet to host this unit; skip in that case.
+            if u.limit == 0 || u.count.saturating_add(u.in_training) >= u.limit {
+                continue;
+            }
+            // Target a modest standing army, clamped to the current cap, and
+            // retrain in batches of 5.
             let target = match u.name {
                 "soldier" => 25u16,
                 _ => 10u16,
-            };
+            }
+            .min(u.limit);
             if u.count >= target {
                 continue;
             }
-            let wanted = (target - u.count).min(5) as u64;
+            let headroom = u.limit.saturating_sub(u.count).saturating_sub(u.in_training);
+            let wanted = (target - u.count).min(headroom).min(5) as u64;
+            if wanted == 0 {
+                continue;
+            }
             let wood_need = u.training_cost_wood.saturating_mul(wanted);
             let stone_need = u.training_cost_stone.saturating_mul(wanted);
             let silver_need = u.training_cost_silver.saturating_mul(wanted);

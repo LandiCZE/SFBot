@@ -422,6 +422,9 @@ pub struct FortressUnitBrief {
     pub level: u16,
     pub count: u16,
     pub in_training: u16,
+    /// Server cap on `count + in_training`. Zero means the fortress can't host
+    /// this unit yet (training building missing or too low).
+    pub limit: u16,
     pub training_finishes_in_sec: Option<i64>,
     pub training_cost_wood: u64,
     pub training_cost_stone: u64,
@@ -1475,6 +1478,7 @@ fn fortress_summary(
             level: u.level,
             count: u.count,
             in_training: u.in_training,
+            limit: u.limit,
             training_finishes_in_sec,
             training_cost_wood: u.training.cost.wood,
             training_cost_stone: u.training.cost.stone,

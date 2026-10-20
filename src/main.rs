@@ -372,6 +372,17 @@ async fn main() -> Result<()> {
                                 caps.guild_portal_disabled = true;
                                 tracing::warn!("disabling guild portal for this session");
                             }
+                            // Fortress unit training can fail for reasons that
+                            // persist for the rest of the run (e.g. barracks
+                            // mid-upgrade → "unit limit reached", or the unit
+                            // is already at its cap). Skip that unit for the
+                            // session instead of re-firing every cycle.
+                            if let actions::Action::FortressTrainUnit { unit, .. } =
+                                &decision.action
+                            {
+                                caps.fortress_units_skipped.insert(unit.clone());
+                                tracing::warn!(unit = %unit, "skipping fortress unit training for this session");
+                            }
                             if feature_err {
                                 use actions::Action::*;
                                 match &decision.action {
