@@ -398,22 +398,18 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
 
     // 4. Fortress: collect from the production building (woodcutter / quarry
     // / academy) when its own buffer is ≥60% full. This is what stalls
-    // workers when it hits 100% — not the warehouse. Also require warehouse
-    // headroom (current < limit), since collect fails if the warehouse is
-    // already capped.
+    // workers when it hits 100% — not the warehouse. For wood/stone, also
+    // require warehouse headroom (current < limit), since collect fails if
+    // the warehouse is already capped. XP has no warehouse in sf-api
+    // (experience_current / experience_limit are never populated — stay 0)
+    // so the headroom check doesn't apply.
     if let Some(f) = fortress_opt {
-        for (name, pending, prod_lim, wh_cur, wh_lim) in [
-            ("wood", f.wood_pending, f.wood_production_limit, f.wood_current, f.wood_limit),
-            ("stone", f.stone_pending, f.stone_production_limit, f.stone_current, f.stone_limit),
-            (
-                "experience",
-                f.experience_pending,
-                f.experience_production_limit,
-                f.experience_current,
-                f.experience_limit,
-            ),
+        for (name, pending, prod_lim, warehouse_full) in [
+            ("wood", f.wood_pending, f.wood_production_limit, f.wood_current >= f.wood_limit),
+            ("stone", f.stone_pending, f.stone_production_limit, f.stone_current >= f.stone_limit),
+            ("experience", f.experience_pending, f.experience_production_limit, false),
         ] {
-            if prod_lim > 0 && pending * 10 >= prod_lim * 6 && wh_cur < wh_lim {
+            if prod_lim > 0 && pending * 10 >= prod_lim * 6 && !warehouse_full {
                 return Some(HeuristicPick {
                     action: Action::FortressGatherResource {
                         resource: name.into(),

@@ -684,23 +684,18 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
                 .fortress
                 .as_ref()
                 .ok_or_else(|| "fortress not unlocked".to_string())?;
-            match resource.as_str() {
-                "wood" => {
-                    if f.wood_current == 0 {
-                        return Err("no wood to gather".into());
-                    }
-                }
-                "stone" => {
-                    if f.stone_current == 0 {
-                        return Err("no stone to gather".into());
-                    }
-                }
-                "experience" => {
-                    if f.experience_current == 0 {
-                        return Err("no experience to gather".into());
-                    }
-                }
+            // Gather moves from the producer buffer (last_collectable) into
+            // the warehouse — so the precondition is "producer has pending",
+            // not "warehouse has stock". For XP there is no warehouse at
+            // all (sf-api leaves experience_current / experience_limit at 0).
+            let pending = match resource.as_str() {
+                "wood" => f.wood_pending,
+                "stone" => f.stone_pending,
+                "experience" => f.experience_pending,
                 other => return Err(format!("unknown resource {other:?}")),
+            };
+            if pending == 0 {
+                return Err(format!("no {resource} pending in producer buffer"));
             }
             Ok(())
         }
