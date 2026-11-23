@@ -28,11 +28,18 @@ async fn main() -> Result<()> {
         }
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    // sf-api 0.4.4 logs an ERROR every Update because the server now sends
+    // the hellevator guild rank as "rank/total" (e.g. "161/10155") and sf-api
+    // expects a bare integer (it falls back to 0; we don't use it). The only
+    // other emitter in sf_api::response is the same value-conversion helper,
+    // whose failures also come back as Err and get logged by us. Mute it
+    // unless RUST_LOG explicitly configures that target.
+    let rust_log = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into());
+    let mut filter = EnvFilter::new(&rust_log);
+    if !rust_log.contains("sf_api::response") {
+        filter = filter.add_directive("sf_api::response=off".parse().expect("static directive"));
+    }
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let cfg = Config::from_env()?;
     let mut session = login(&cfg).await?;
