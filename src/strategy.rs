@@ -3,6 +3,7 @@
 //! treats that as a wait.
 
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 use crate::actions::{Action, Attr};
 use crate::expedition_policy::{self, DEFAULT_WEIGHTS};
@@ -30,7 +31,19 @@ pub struct RuntimeCaps {
     // server has already rejected this session — e.g. the barracks is mid-
     // upgrade. Prevents the top-up heuristic from re-firing every cycle.
     pub fortress_units_skipped: HashSet<String>,
+    // Hellevator actions the server rejected (e.g. "cannot do this right
+    // now", "skip type not allowed") while sf-api still reports them doable.
+    // Back off until this instant instead of retrying every cycle; the
+    // condition is usually transient (key cards regenerate, event phases
+    // change), so this is a cooldown rather than a session-wide disable.
+    pub hellevator_backoff_until: Option<Instant>,
+    // Server rejected a calendar claim this session; don't retry.
+    pub calendar_disabled: bool,
+    pub advent_calendar_disabled: bool,
 }
+
+/// How long to stop picking hellevator actions after the server rejects one.
+pub const HELLEVATOR_BACKOFF: Duration = Duration::from_secs(30 * 60);
 
 /// Minimum free backpack slots required before starting an expedition.
 /// Expeditions can drop up to ~4 items (encounter targets + boss drops);
@@ -290,6 +303,20 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
                 reason: "heuristic: guild hydra fight available (remaining > 0, off cooldown)",
             });
         }
+    }
+
+    // 3b3. Daily login calendar + advent calendar (free, once a day).
+    if state.tasks.calendar_claimable && !caps.calendar_disabled {
+        return Some(HeuristicPick {
+            action: Action::CollectCalendar,
+            reason: "heuristic: daily login calendar reward available",
+        });
+    }
+    if state.tasks.advent_calendar_claimable && !caps.advent_calendar_disabled {
+        return Some(HeuristicPick {
+            action: Action::CollectAdventCalendar,
+            reason: "heuristic: advent calendar door available",
+        });
     }
 
     // 3c. Claim task chests (free rewards: silver, mushrooms via chest, items).
@@ -656,8 +683,18 @@ pub fn pick(state: &StateSummary, caps: &RuntimeCaps) -> Option<HeuristicPick> {
         }
     }
 
-    // 6a2. Hellevator event handling (gated on status()).
-    match state.hellevator.status {
+    // 6a2. Hellevator event handling (gated on status()). Skipped while a
+    //      server-rejection backoff is active.
+    let hellevator_backed_off = caps
+        .hellevator_backoff_until
+        .map(|t| Instant::now() < t)
+        .unwrap_or(false);
+    let hellevator_status = if hellevator_backed_off {
+        "backoff"
+    } else {
+        state.hellevator.status
+    };
+    match hellevator_status {
         "reward_claimable" => {
             return Some(HeuristicPick {
                 action: Action::HellevatorClaimFinal,

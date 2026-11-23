@@ -383,6 +383,38 @@ async fn main() -> Result<()> {
                                 caps.fortress_units_skipped.insert(unit.clone());
                                 tracing::warn!(unit = %unit, "skipping fortress unit training for this session");
                             }
+                            // Calendar claims: sf-api's next_possible can be
+                            // stale; a rejection means "already collected".
+                            match &decision.action {
+                                actions::Action::CollectCalendar => {
+                                    caps.calendar_disabled = true;
+                                    tracing::warn!("calendar claim rejected — skipping for this session");
+                                }
+                                actions::Action::CollectAdventCalendar => {
+                                    caps.advent_calendar_disabled = true;
+                                    tracing::warn!("advent calendar claim rejected — skipping for this session");
+                                }
+                                _ => {}
+                            }
+                            // Hellevator rejections ("cannot do this right now",
+                            // "skip type not allowed") repeat every cycle while
+                            // sf-api still shows key cards / claimable rewards.
+                            // Back off for a while rather than hammering it.
+                            if matches!(
+                                &decision.action,
+                                actions::Action::HellevatorEnter
+                                    | actions::Action::HellevatorFight
+                                    | actions::Action::HellevatorClaimDaily
+                                    | actions::Action::HellevatorClaimDailyYesterday
+                                    | actions::Action::HellevatorClaimFinal
+                            ) {
+                                caps.hellevator_backoff_until =
+                                    Some(Instant::now() + strategy::HELLEVATOR_BACKOFF);
+                                tracing::warn!(
+                                    mins = strategy::HELLEVATOR_BACKOFF.as_secs() / 60,
+                                    "hellevator action rejected — backing off"
+                                );
+                            }
                             if feature_err {
                                 use actions::Action::*;
                                 match &decision.action {
@@ -1096,6 +1128,14 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
             };
             session.send_command(cmd).await?;
             Ok(format!("claimed {track} chest {pos}"))
+        }
+        Action::CollectCalendar => {
+            session.send_command(Command::CollectCalendar).await?;
+            Ok("collected daily calendar".to_string())
+        }
+        Action::CollectAdventCalendar => {
+            session.send_command(Command::CollectAdventsCalendar).await?;
+            Ok("collected advent calendar".to_string())
         }
         Action::OpenMail { pos } => {
             session

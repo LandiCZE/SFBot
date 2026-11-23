@@ -42,6 +42,8 @@ pub enum Action {
     FightPetOpponent { habitat: String },
     BuyShopItem { shop: String, pos: u8 },
     ClaimTaskChest { track: String, pos: u8 },
+    CollectCalendar,
+    CollectAdventCalendar,
     OpenMail { pos: u8 },
     DeleteAllMail,
     ClaimPendingMail { msg_id: i64 },
@@ -557,6 +559,18 @@ pub fn validate(action: &Action, state: &StateSummary) -> Result<(), String> {
             };
             if !claimable.contains(pos) {
                 return Err(format!("chest {pos} is not currently claimable on {track}"));
+            }
+            Ok(())
+        }
+        Action::CollectCalendar => {
+            if !state.tasks.calendar_claimable {
+                return Err("daily calendar not open yet".into());
+            }
+            Ok(())
+        }
+        Action::CollectAdventCalendar => {
+            if !state.tasks.advent_calendar_claimable {
+                return Err("no advent calendar door to open".into());
             }
             Ok(())
         }

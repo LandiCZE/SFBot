@@ -377,6 +377,10 @@ pub struct TasksSummary {
     pub event_earned_points: u32,
     pub event_total_points: u32,
     pub event_claimable_chests: Vec<u8>,
+    /// Daily login calendar door is open (next_possible is in the past).
+    pub calendar_claimable: bool,
+    /// Advent calendar (December) has a door waiting.
+    pub advent_calendar_claimable: bool,
 }
 
 #[derive(Serialize)]
@@ -1276,6 +1280,12 @@ fn shops_summary(gs: &GameState, main: AttributeType) -> Vec<ShopSummary> {
 
 fn tasks_summary(gs: &GameState) -> TasksSummary {
     let tasks = &gs.specials.tasks;
+    tracing::debug!(
+        collected = gs.specials.calendar.collected,
+        next_possible = ?gs.specials.calendar.next_possible,
+        advent = gs.specials.advent_calendar.is_some(),
+        "calendar state"
+    );
     let daily_earned = tasks.daily.earned_points();
     let daily_total = tasks.daily.total_points();
     let event_earned = tasks.event.earned_points();
@@ -1293,6 +1303,13 @@ fn tasks_summary(gs: &GameState) -> TasksSummary {
         event_earned_points: event_earned,
         event_total_points: event_total,
         event_claimable_chests: event_claimable,
+        calendar_claimable: gs
+            .specials
+            .calendar
+            .next_possible
+            .map(|t| t <= Local::now())
+            .unwrap_or(false),
+        advent_calendar_claimable: gs.specials.advent_calendar.is_some(),
     }
 }
 
