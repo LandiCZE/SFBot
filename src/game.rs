@@ -934,6 +934,20 @@ fn upgradable_equipped_items(gs: &GameState) -> Vec<UpgradableItemBrief> {
 }
 
 fn hellevator_summary(gs: &GameState) -> HellevatorSummary {
+    if let HellevatorStatus::Active(h) = gs.hellevator.status() {
+        tracing::debug!(
+            key_cards = h.key_cards,
+            current_floor = h.current_floor,
+            own_best_floor = h.own_best_floor,
+            points = h.points,
+            next_card = ?h.next_card_generated,
+            next_reset = ?h.next_reset,
+            monster = ?h.current_monster,
+            start = ?gs.hellevator.start,
+            end = ?gs.hellevator.end,
+            "hellevator state"
+        );
+    }
     let status = match gs.hellevator.status() {
         HellevatorStatus::NotAvailable => "not_available",
         HellevatorStatus::NotEntered => "not_entered",

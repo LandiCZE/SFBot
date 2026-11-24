@@ -949,9 +949,17 @@ async fn execute(session: &mut SimpleSession, action: &actions::Action) -> Resul
             Ok("entered hellevator".to_string())
         }
         Action::HellevatorFight => {
+            // sf-api 0.4.4 sends `GroupTournamentBattle:0`, which the current
+            // server rejects with "skip type not allowed". The argument is a
+            // `SkipFlag` (None=0, Mushrooms=1, Token=2, ...). The official
+            // client (v32.000, GuildTournamentMonsterScreen.UpdateData) sends
+            // Token=2 whenever GuildTournament.Tickets (key cards) > 0, else
+            // Mushrooms=1. We only ever send Token — the validator already
+            // requires key_cards > 0 — so this can never spend a mushroom.
             session
-                .send_command(Command::HellevatorFight {
-                    use_mushroom: false,
+                .send_command(Command::Custom {
+                    cmd_name: "GroupTournamentBattle".to_string(),
+                    arguments: vec!["2".to_string()],
                 })
                 .await?;
             Ok("hellevator fight".to_string())
